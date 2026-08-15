@@ -1,0 +1,6 @@
+{
+  "name": "iPOS Invoice AI",
+  "description": "Chuyển đổi hóa đơn, phiếu giao hàng viết tay hoặc in thành file Excel nhập mua hàng iPOS Inventory bằng AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
