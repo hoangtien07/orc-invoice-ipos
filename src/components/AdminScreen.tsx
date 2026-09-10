@@ -108,7 +108,7 @@ import {
   StockNormsTab,
   AliasesTab,
 } from './admin/tabs/OtherTabs';
-import { TemplateTab, BackupTab } from './admin/tabs/TemplateAndBackupTab';
+import { BackupTab } from './admin/tabs/TemplateAndBackupTab';
 
 export type AdminTabType =
   | 'items'
@@ -123,7 +123,6 @@ export type AdminTabType =
   | 'priceLists'
   | 'reasons'
   | 'stockNorms'
-  | 'template'
   | 'aliases'
   | 'backup';
 
@@ -382,23 +381,15 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({
     return arr.slice(start, start + pageSize);
   };
 
-  // Tab definitions
-  const tabsConfig: { id: AdminTabType; name: string; count: number; icon: any }[] = [
-    { id: 'items', name: '1. Hàng hoá', count: items.length, icon: Box },
-    { id: 'categories', name: '2. Nhóm hàng', count: categories.length, icon: Layers },
-    { id: 'units', name: '3. Đơn vị tính', count: units.length, icon: Hash },
-    { id: 'conversions', name: '4. Bảng quy đổi ĐVT', count: conversions.length, icon: Scale },
-    { id: 'recipes', name: '5. Định lượng / BOM', count: recipes.length, icon: ChefHat },
-    { id: 'warehouses', name: '6. Kho hàng', count: warehouses.length, icon: Warehouse },
-    { id: 'customers', name: '7. Khách hàng', count: customers.length, icon: Users },
-    { id: 'suppliers', name: '8. Nhà cung cấp', count: suppliers.length, icon: Building2 },
-    { id: 'supplierGroups', name: '9. Nhóm NCC', count: supplierGroups.length, icon: Tag },
-    { id: 'priceLists', name: '10. Bảng giá mua', count: priceLists.length, icon: DollarSign },
-    { id: 'reasons', name: '11. Lý do xuất nhập', count: reasons.length, icon: HelpCircle },
-    { id: 'stockNorms', name: '12. Định mức tồn kho', count: stockNorms.length, icon: TrendingDown },
-    { id: 'template', name: 'Mẫu Excel iPOS', count: masterData?.templateFileName ? 1 : 0, icon: FileSpreadsheet },
-    { id: 'aliases', name: 'Từ điển học máy (AI)', count: aliases.length, icon: BookMarked },
-    { id: 'backup', name: 'Sao lưu & Phục hồi CSDL', count: 0, icon: Database },
+  // Tab definitions: 5 Core iPOS Catalog Files + AI Aliases + Database Backup
+  const tabsConfig: { id: AdminTabType; name: string; count: number; icon: any; hint?: string }[] = [
+    { id: 'suppliers', name: '1. Nhà cung cấp', count: suppliers.length, icon: Building2, hint: 'File danh sách nhà cung cấp' },
+    { id: 'warehouses', name: '2. Kho hàng', count: warehouses.length, icon: Warehouse, hint: 'File danh sách kho hàng' },
+    { id: 'units', name: '3. Đơn vị tính', count: units.length, icon: Hash, hint: 'File mẫu nhập đơn vị tính' },
+    { id: 'conversions', name: '4. Bảng quy đổi ĐVT', count: conversions.length, icon: Scale, hint: 'File quy đổi đơn vị tính' },
+    { id: 'items', name: '5. Danh sách hàng hoá', count: items.length, icon: Box, hint: 'File danh sách hàng hoá' },
+    { id: 'aliases', name: 'Từ điển Alias AI', count: aliases.length, icon: BookMarked },
+    { id: 'backup', name: 'Sao lưu CSDL', count: 0, icon: Database },
   ];
 
   // Excel Single Tab Upload
@@ -549,7 +540,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({
       onMasterDataUpdated(updated);
       setNotification({
         type: 'success',
-        message: `Đã nhận diện và nạp thành công ${files.length} file Excel vào 12 danh mục nghiệp vụ!`,
+        message: `Đã nhận diện và nạp thành công ${files.length} file Excel vào các danh mục nghiệp vụ iPOS!`,
       });
     } catch (err: any) {
       console.error('Error smart multi file parse:', err);
@@ -698,7 +689,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({
             <Sparkles className="w-12 h-12 text-emerald-400 mx-auto animate-bounce" />
             <h3 className="text-xl font-bold">Thả các file Excel iPOS vào đây</h3>
             <p className="text-sm text-slate-300">
-              Hệ thống AI sẽ tự động phân loại thông minh vào 12 danh mục nghiệp vụ tương ứng.
+              Hệ thống AI sẽ tự động phân loại thông minh vào 6 danh mục chuẩn iPOS tương ứng.
             </p>
           </div>
         </div>
@@ -716,13 +707,13 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({
           </button>
           <div>
             <h1 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
-              <span>Chuẩn hóa 12 Danh mục Nghiệp vụ iPOS</span>
+              <span>Chuẩn hóa Dữ liệu Nghiệp vụ iPOS</span>
               <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[11px] font-semibold">
                 Quản trị Admin
               </span>
             </h1>
             <p className="text-xs text-slate-500">
-              Quản lý CSDL vật tư, quy đổi ĐVT, BOM, bảng giá mua và nhà cung cấp chuẩn hệ thống iPOS.
+              Quản lý 6 danh mục dữ liệu chuẩn: Mẫu nhập mua hàng, Nhà cung cấp, Kho hàng, Đơn vị tính, Quy đổi ĐVT, và Danh sách hàng hoá.
             </p>
           </div>
         </div>
@@ -1225,16 +1216,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({
           />
         )}
 
-        {/* TAB 13: TEMPLATE */}
-        {activeTab === 'template' && (
-          <TemplateTab
-            masterData={masterData}
-            onMasterDataUpdated={onMasterDataUpdated}
-            setNotification={setNotification}
-          />
-        )}
-
-        {/* TAB 14: ALIASES (LEARNED DICTIONARY) */}
+        {/* TAB 13: ALIASES (LEARNED DICTIONARY) */}
         {activeTab === 'aliases' && (
           <AliasesTab
             aliases={paginate(filteredAliases)}

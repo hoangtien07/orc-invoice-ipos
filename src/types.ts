@@ -10,11 +10,14 @@ export interface IposItem {
   unitName?: string;
   category?: string;
   categoryId?: string;
+  itemType?: number | string; // 0 - NVL (Nguyên vật liệu), 1 - Thành phẩm / Đồ uống / Món ăn
   costPrice?: number;
   barcode?: string;
   status?: string;
   description?: string;
   sourceSheet?: string;
+  warning?: string;
+  autoInferredUnit?: boolean;
 }
 
 // 2. Nhóm hàng hoá (Danh sách nhóm hàng hoá.xlsx)
@@ -131,11 +134,11 @@ export interface IposMasterData {
   items: IposItem[];
   categories?: IposItemCategory[];
   units?: IposUnit[];
-  unitConversions: IposUnitConversion[];
+  unitConversions?: IposUnitConversion[];
   recipes?: IposRecipe[];
-  warehouses: IposWarehouse[];
+  warehouses?: IposWarehouse[];
   customers?: IposCustomer[];
-  suppliers: IposSupplier[];
+  suppliers?: IposSupplier[];
   supplierGroups?: IposSupplierGroup[];
   priceLists?: IposPriceList[];
   reasons?: IposReason[];
@@ -195,6 +198,7 @@ export interface MatchedInvoiceRow {
   vat: number | null;
   amount_vat: number | null;
   sub_total: number | null;
+  total_amount?: number | null;
   note: string;
   
   // Relational & Conversion state

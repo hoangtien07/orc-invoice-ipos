@@ -1,77 +1,15 @@
 import React from 'react';
 import {
-  FileSpreadsheet,
   Download,
   Upload,
   AlertTriangle,
 } from 'lucide-react';
 import { IposMasterData } from '../../../types';
-import { readFileAsArrayBuffer, arrayBufferToBase64 } from '../../../utils/excel';
 import {
-  saveTemplateFile,
   exportAllDataAsJson,
   importAllDataFromJson,
   clearEntireDatabase,
 } from '../../../utils/db';
-
-export const TemplateTab: React.FC<{
-  masterData: IposMasterData | null;
-  onMasterDataUpdated: (data: IposMasterData) => void;
-  setNotification: (notif: { type: 'success' | 'error' | 'info'; message: string }) => void;
-}> = ({ masterData, onMasterDataUpdated, setNotification }) => {
-  const templateInputRef = React.useRef<HTMLInputElement>(null);
-
-  return (
-    <div className="p-6 max-w-2xl mx-auto text-center space-y-4">
-      <div className="w-12 h-12 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto">
-        <FileSpreadsheet className="w-6 h-6" />
-      </div>
-      <h3 className="text-base font-bold text-slate-800">File Mẫu Nhập Mua Hàng iPOS Inventory</h3>
-      <p className="text-xs text-slate-500 leading-relaxed">
-        Tải lên file mẫu Excel (.xlsx) chuẩn của doanh nghiệp bạn (chứa cấu trúc cột, logo, header thông tin).
-        Khi quét hóa đơn xong, hệ thống sẽ điền dữ liệu trực tiếp vào mẫu này để xuất khẩu.
-      </p>
-
-      <input
-        type="file"
-        ref={templateInputRef}
-        accept=".xlsx,.xls"
-        onChange={async (e) => {
-          const file = e.target.files?.[0];
-          if (!file) return;
-          const buffer = await readFileAsArrayBuffer(file);
-          const b64 = arrayBufferToBase64(buffer);
-          const updated = await saveTemplateFile(b64, file.name);
-          onMasterDataUpdated(updated);
-          setNotification({
-            type: 'success',
-            message: `Đã lưu file mẫu Excel iPOS: "${file.name}"`,
-          });
-        }}
-        className="hidden"
-      />
-
-      <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 text-left flex items-center justify-between">
-        <div>
-          <p className="text-xs font-semibold text-slate-800">
-            {masterData?.templateFileName ? masterData.templateFileName : 'Chưa tải file mẫu tùy chỉnh'}
-          </p>
-          <p className="text-[11px] text-slate-500">
-            {masterData?.templateFileName
-              ? 'Đang sử dụng file mẫu tùy chỉnh này khi xuất file'
-              : 'Đang dùng mẫu chuẩn mặc định của iPOS'}
-          </p>
-        </div>
-        <button
-          onClick={() => templateInputRef.current?.click()}
-          className="px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-xl shadow-sm"
-        >
-          {masterData?.templateFileName ? 'Thay đổi file mẫu' : 'Tải lên file mẫu'}
-        </button>
-      </div>
-    </div>
-  );
-};
 
 export const BackupTab: React.FC<{
   onMasterDataUpdated: (data: IposMasterData) => void;

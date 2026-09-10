@@ -1,5 +1,6 @@
 import { SAMPLE_IPOS_MASTER_DATA } from '../data/mockData';
-import { MatchedInvoiceRow, RawInvoiceRow } from '../types';
+import { IposMasterData, MatchedInvoiceRow, RawInvoiceRow } from '../types';
+import { healMasterDataUnits } from './db';
 import { validateForExport } from './excel';
 import { CatalogResolver } from './resolver';
 import {
@@ -327,6 +328,113 @@ export function runAllUnitTests(): TestSuiteResult {
       blockedByYellow.canExport === false && blockedByYellow.unconfirmedYellowCount === 1,
       `canExport: ${blockedByYellow.canExport}, unconfirmedYellow: ${blockedByYellow.unconfirmedYellowCount}`,
       'canExport: false, unconfirmedYellow: 1'
+    );
+
+    // Test Unit Self-Healing (CP22 recovery & 1000 GR to KG inference)
+    const testDataToHeal: IposMasterData = {
+      items: [
+        { itemId: 'CP22', itemName: 'Đu đủ ương 木瓜', unitId: '', unitName: '', status: 'Đang dùng' },
+        { itemId: 'CP99', itemName: 'Hành hoa', unitId: '', unitName: '', status: 'Đang dùng' },
+      ],
+      categories: [],
+      units: [],
+      unitConversions: [
+        { itemId: 'CP22', itemName: 'Đu đủ ương 木瓜', sourceUnitName: 'GR', targetUnitName: '', conversionRate: 1000 },
+        { itemId: 'CP99', itemName: 'Hành hoa', sourceUnitName: 'GR', targetUnitName: 'KG', conversionRate: 1000 },
+      ],
+    };
+
+    const healed = healMasterDataUnits(testDataToHeal);
+    const cp22 = testDataToHeal.items.find((i) => i.itemId === 'CP22');
+    const cp99 = testDataToHeal.items.find((i) => i.itemId === 'CP99');
+
+    assert(
+      'Tự phục hồi ĐVT (CP22 & Suy luận 1000 GR)',
+      'heal_1',
+      'Tự phục hồi mã CP22 khuyết ĐVT thành KG',
+      'Mã CP22 bị khuyết ĐVT trong file Excel gốc phải được tự động chuyển sang KG thay vì GR',
+      healed === true && cp22?.unitId === 'KG' && cp22?.unitName === 'Kg' && cp22?.autoInferredUnit === true,
+      `unitId: ${cp22?.unitId}, unitName: ${cp22?.unitName}, autoInferred: ${cp22?.autoInferredUnit}`,
+      'unitId: KG, unitName: Kg, autoInferred: true'
+    );
+
+    assert(
+      'Tự phục hồi ĐVT (CP22 & Suy luận 1000 GR)',
+      'heal_2',
+      'Suy luận ĐVT chính KG khi tỷ lệ quy đổi là 1000 GR',
+      'Mặt hàng khuyết ĐVT nhưng có cột quy đổi 1000 GR phải tự động xác định ĐVT chính là KG',
+      cp99?.unitId === 'KG' && cp99?.unitName === 'Kg' && cp99?.autoInferredUnit === true,
+      `unitId: ${cp99?.unitId}, unitName: ${cp99?.unitName}, autoInferred: ${cp99?.autoInferredUnit}`,
+      'unitId: KG, unitName: Kg, autoInferred: true'
+    );
+
+    const conv22 = testDataToHeal.unitConversions?.find((c) => c.itemId === 'CP22');
+    assert(
+      'Tự phục hồi ĐVT (CP22 & Suy luận 1000 GR)',
+      'heal_3',
+      'Chuẩn hóa chiều quy đổi 1 KG = 1000 GR',
+      'ĐVT chính (KG) phải là sourceUnitName và ĐVT quy đổi (GR) phải là targetUnitName',
+      conv22?.sourceUnitName === 'Kg' && conv22?.targetUnitName === 'GR' && conv22?.conversionRate === 1000,
+      `1 ${conv22?.sourceUnitName} = ${conv22?.conversionRate} ${conv22?.targetUnitName}`,
+      '1 Kg = 1000 GR'
+    );
+
+    // 6. Learned Alias & Supplier-Specific Name Mapping
+    const sampleItemCatalog: IposMasterData = {
+      items: [
+        { itemId: 'CP273', itemName: 'Nước lọc Dasani 500ml', unitId: 'Chai', unitName: 'Chai', status: 'Đang dùng' },
+        { itemId: 'CP22', itemName: 'Đu đủ ương 木瓜', unitId: 'KG', unitName: 'Kg', status: 'Đang dùng' },
+      ],
+      categories: [],
+      units: [],
+      unitConversions: [],
+    };
+
+    const mockLearnedAliases = [
+      {
+        id: 'NCC_COCA:::do uong dasani 510ml 24 pet carton',
+        supplier_id: 'NCC_COCA',
+        supplier_name: 'Công ty Coca Cola',
+        normalized_raw_item_name: 'do uong dasani 510ml 24 pet carton',
+        raw_item_sample: 'Đồ uống DASANI 510ML 24 PET CARTON',
+        selected_item_id: 'CP273',
+        selected_item_name: 'Nước lọc Dasani 500ml',
+        selected_unit: 'Chai',
+        updatedAt: Date.now(),
+        timesUsed: 5,
+      },
+    ];
+
+    const resolverWithAlias = new CatalogResolver(sampleItemCatalog, mockLearnedAliases, []);
+    
+    // Test exact matching of learned alias with newlines from OCR
+    const rawMultiLineInvoiceText = 'Đồ uống\nDASANI\n510ML 24\nPET\nCARTON';
+    const resolvedCandidates = resolverWithAlias.resolveCandidates(rawMultiLineInvoiceText, 'Thùng', 'NCC_COCA');
+
+    assert(
+      'Học & Ghi nhớ Từ điển Alias (Theo Nhà Cung Cấp)',
+      'alias_1',
+      'Tự động nhận diện 99% cho lần quét tới dựa trên Alias đã lưu',
+      'Khi quét hóa đơn mới có tên viết theo nhà cung cấp, hệ thống phải tự khớp vào mã iPOS đã học',
+      resolvedCandidates.length > 0 &&
+        resolvedCandidates[0].item.itemId === 'CP273' &&
+        resolvedCandidates[0].matchType === 'learned_alias' &&
+        resolvedCandidates[0].confidencePercent === 99,
+      resolvedCandidates[0] ? `itemId: ${resolvedCandidates[0].item.itemId}, matchType: ${resolvedCandidates[0].matchType}, confidence: ${resolvedCandidates[0].confidencePercent}%` : 'none',
+      'itemId: CP273, matchType: learned_alias, confidence: 99%'
+    );
+
+    // Test supplier isolation (different supplier should not falsely trigger if supplier-specific)
+    const otherSupplierCandidates = resolverWithAlias.resolveCandidates(rawMultiLineInvoiceText, 'Thùng', 'NCC_KHAC');
+    const matchedFromOther = otherSupplierCandidates.find((c) => c.matchType === 'learned_alias');
+    assert(
+      'Học & Ghi nhớ Từ điển Alias (Theo Nhà Cung Cấp)',
+      'alias_2',
+      'Cách ly alias theo từng Nhà Cung Cấp',
+      'Alias của NCC_COCA không được áp dụng nhầm cho nhà cung cấp NCC_KHAC',
+      matchedFromOther === undefined,
+      matchedFromOther ? 'Trùng lặp' : 'Cách ly an toàn',
+      'Cách ly an toàn'
     );
   }
 

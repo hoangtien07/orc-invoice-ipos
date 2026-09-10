@@ -19,6 +19,8 @@ import {
   Eye,
   Layers,
   Building,
+  X,
+  Check,
 } from 'lucide-react';
 import {
   IposItem,
@@ -29,9 +31,16 @@ import {
   RawInvoiceData,
   RowStatus,
 } from '../types';
-import { generateIposExportWorkbook, validateForExport } from '../utils/excel';
+import { generateIposExportWorkbook, validateForExport, writeXlsxFile } from '../utils/excel';
 import { saveLearnedItemAlias } from '../utils/db';
-import { formatQuantity, formatVND, normalizeText, getAvailableSystemUnits } from '../utils/vietnamese';
+import {
+  formatQuantity,
+  formatVND,
+  normalizeText,
+  normalizeWithoutAccents,
+  getAvailableSystemUnits,
+  isSameOrEquivalentUnit,
+} from '../utils/vietnamese';
 import { CatalogResolver } from '../utils/resolver';
 
 interface ReviewScreenProps {
@@ -53,6 +62,7 @@ interface ReviewScreenProps {
   learnedUnitAliases: LearnedUnitAlias[];
   onAliasesUpdated: () => void;
   onBackToScan: () => void;
+  onOpenAliasManager?: () => void;
 }
 
 export const ReviewScreen: React.FC<ReviewScreenProps> = ({
@@ -65,6 +75,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
   learnedUnitAliases = [],
   onAliasesUpdated,
   onBackToScan,
+  onOpenAliasManager,
 }) => {
   const [activeFilter, setActiveFilter] = useState<'ALL' | 'YELLOW' | 'RED' | 'GREEN'>('ALL');
   const [selectedRowId, setSelectedRowId] = useState<string | null>(rows[0]?.id || null);
@@ -73,6 +84,16 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
   const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
   const [exportWarningModal, setExportWarningModal] = useState<string[] | null>(null);
   const [saveAliasSuccessRowId, setSaveAliasSuccessRowId] = useState<string | null>(null);
+  const [autoLearnAlias, setAutoLearnAlias] = useState<boolean>(true);
+  const [aliasSavedToast, setAliasSavedToast] = useState<{
+    show: boolean;
+    rowId: string;
+    rawName: string;
+    itemId: string;
+    itemName: string;
+    supplierId: string;
+    supplierName: string;
+  } | null>(null);
 
   const resolver = useMemo(() => {
     return new CatalogResolver(
@@ -95,7 +116,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
   const yellowCount = rows.filter((r) => r.status === 'YELLOW').length;
   const redCount = rows.filter((r) => r.status === 'RED').length;
 
-  const totalInvoiceAmount = useMemo(() => {
+  const totalInvoiceSubTotal = useMemo(() => {
     return rows.reduce((sum, r) => {
       const rowAmt =
         r.sub_total !== null && r.sub_total !== undefined
@@ -105,6 +126,36 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
     }, 0);
   }, [rows]);
 
+  const totalInvoiceVatAmount = useMemo(() => {
+    return rows.reduce((sum, r) => {
+      const subTot =
+        r.sub_total !== null && r.sub_total !== undefined
+          ? r.sub_total
+          : (r.quantity || 0) * (r.price || 0);
+      const vatAmt =
+        r.amount_vat !== null && r.amount_vat !== undefined
+          ? r.amount_vat
+          : (subTot * (r.vat || 0)) / 100;
+      return sum + vatAmt;
+    }, 0);
+  }, [rows]);
+
+  const totalInvoiceAmount = useMemo(() => {
+    return rows.reduce((sum, r) => {
+      if (r.total_amount !== null && r.total_amount !== undefined) {
+        return sum + r.total_amount;
+      }
+      const subTot =
+        r.sub_total !== null && r.sub_total !== undefined
+          ? r.sub_total
+          : (r.quantity || 0) * (r.price || 0);
+      const vatAmt =
+        r.amount_vat !== null && r.amount_vat !== undefined
+          ? r.amount_vat
+          : (subTot * (r.vat || 0)) / 100;
+      return sum + subTot + vatAmt;
+    }, 0);
+  }, [rows]);
 
   // Update a field in a specific row
   const handleUpdateRow = (rowId: string, updates: Partial<MatchedInvoiceRow>) => {
@@ -113,11 +164,32 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
         if (r.id !== rowId) return r;
         const updatedRow = { ...r, ...updates };
 
-        // Recalculate subtotal if quantity or price changed
-        if (updates.quantity !== undefined || updates.price !== undefined) {
-          const qty = updates.quantity !== undefined ? updates.quantity : updatedRow.quantity;
-          const pr = updates.price !== undefined ? updates.price : updatedRow.price;
-          updatedRow.sub_total = qty !== null && pr !== null ? qty * pr : null;
+        // Recalculate amounts: quantity * price + vat
+        const qty = updates.quantity !== undefined ? updates.quantity : updatedRow.quantity;
+        const pr = updates.price !== undefined ? updates.price : updatedRow.price;
+        const vat = updates.vat !== undefined ? updates.vat : updatedRow.vat;
+        const discount = updates.discount !== undefined ? updates.discount : (updatedRow.discount || 0);
+
+        if (qty !== null && pr !== null && qty !== undefined && pr !== undefined) {
+          const baseSub = qty * pr;
+          const discAmt = (baseSub * discount) / 100;
+          const subTot = baseSub - discAmt;
+          const vatPct = vat || 0;
+          const vatAmt = (subTot * vatPct) / 100;
+          const totalAmt = subTot + vatAmt;
+
+          updatedRow.quantity = qty;
+          updatedRow.price = pr;
+          updatedRow.discount = discount;
+          updatedRow.discount_amount = discAmt;
+          updatedRow.vat = vatPct;
+          updatedRow.sub_total = subTot;
+          updatedRow.amount_vat = vatAmt;
+          updatedRow.total_amount = totalAmt;
+        } else if (qty === null || pr === null) {
+          updatedRow.sub_total = null;
+          updatedRow.amount_vat = null;
+          updatedRow.total_amount = null;
         }
 
         // Re-classify row
@@ -143,12 +215,13 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
     );
   };
 
-  // Select candidate for a row
-  const handleSelectCandidate = (rowId: string, item: IposItem, shouldLearnAlias: boolean = false) => {
+  // Select candidate for a row (auto learns alias for future scans)
+  const handleSelectCandidate = (rowId: string, item: IposItem, shouldLearnAlias?: boolean) => {
     const row = rows.find((r) => r.id === rowId);
     if (!row) return;
 
     const unitComp = resolver.checkUnitCompatibility(row.raw.raw_unit, item.unitName, item.itemId, item.unitId);
+    const willLearnAlias = shouldLearnAlias !== undefined ? shouldLearnAlias : autoLearnAlias;
 
     handleUpdateRow(rowId, {
       selectedCandidate: item,
@@ -157,16 +230,20 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
       unit: unitComp.matchedUnit || item.unitName || item.unitId || row.unit,
       price: row.price || item.costPrice || null,
       isManuallyConfirmed: true,
+      learnedAliasApplied: true,
       status: row.quantity && row.quantity > 0 ? 'GREEN' : 'RED',
     });
 
     setOpenDropdownId(null);
 
-    // Save learned alias if requested
-    if (shouldLearnAlias && row.raw.raw_item_name) {
+    // Save learned alias
+    if (willLearnAlias && row.raw.raw_item_name) {
+      const supplierIdToSave = meta.supplierId || '*';
+      const supplierNameToSave = meta.supplierName || (supplierIdToSave === '*' ? 'Tất cả nhà cung cấp' : 'Nhà cung cấp hiện tại');
+
       saveLearnedItemAlias({
-        supplier_id: meta.supplierId || '*',
-        supplier_name: meta.supplierName,
+        supplier_id: supplierIdToSave,
+        supplier_name: supplierNameToSave,
         normalized_raw_item_name: normalizeText(row.raw.raw_item_name),
         raw_item_sample: row.raw.raw_item_name,
         selected_item_id: item.itemId,
@@ -175,9 +252,60 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
       }).then(() => {
         onAliasesUpdated();
         setSaveAliasSuccessRowId(rowId);
-        setTimeout(() => setSaveAliasSuccessRowId(null), 3000);
+        setAliasSavedToast({
+          show: true,
+          rowId,
+          rawName: row.raw.raw_item_name,
+          itemId: item.itemId,
+          itemName: item.itemName,
+          supplierId: supplierIdToSave,
+          supplierName: supplierNameToSave,
+        });
+        setTimeout(() => setSaveAliasSuccessRowId(null), 4000);
       });
+
+      // Also auto-update any other rows on the same invoice with identical raw name
+      const normRaw = normalizeText(row.raw.raw_item_name);
+      const otherIdentical = rows.filter((r) => r.id !== rowId && normalizeText(r.raw.raw_item_name) === normRaw);
+      if (otherIdentical.length > 0) {
+        for (const other of otherIdentical) {
+          const comp = resolver.checkUnitCompatibility(other.raw.raw_unit, item.unitName, item.itemId, item.unitId);
+          handleUpdateRow(other.id, {
+            selectedCandidate: item,
+            item_id: item.itemId,
+            item_name: item.itemName,
+            unit: comp.matchedUnit || item.unitName || item.unitId || other.unit,
+            price: other.price || item.costPrice || null,
+            isManuallyConfirmed: true,
+            learnedAliasApplied: true,
+            status: other.quantity && other.quantity > 0 ? 'GREEN' : 'RED',
+          });
+        }
+      }
     }
+  };
+
+  const handleConvertAliasToGlobal = async (rawName: string, itemId: string, itemName: string) => {
+    const selectedItem = masterData?.items?.find((i) => i.itemId === itemId);
+    await saveLearnedItemAlias({
+      supplier_id: '*',
+      supplier_name: 'Tất cả nhà cung cấp',
+      normalized_raw_item_name: normalizeText(rawName),
+      raw_item_sample: rawName,
+      selected_item_id: itemId,
+      selected_item_name: itemName,
+      selected_unit: selectedItem?.unitName || selectedItem?.unitId || '',
+    });
+    onAliasesUpdated();
+    setAliasSavedToast((prev) =>
+      prev
+        ? {
+            ...prev,
+            supplierId: '*',
+            supplierName: 'Tất cả nhà cung cấp',
+          }
+        : null
+    );
   };
 
   // Approve all valid YELLOW rows with user confirmation
@@ -197,17 +325,9 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
     );
   };
 
-  // Export to iPOS Excel Workbook
-  const handleExportExcel = () => {
+  // Execute export file Excel directly
+  const executeExport = () => {
     if (!masterData) return;
-
-    const validation = validateForExport(rows);
-
-    if (!validation.canExport) {
-      setExportWarningModal(validation.errors.length > 0 ? validation.errors : validation.warnings);
-      return;
-    }
-
     try {
       const { workbook, fileName } = generateIposExportWorkbook(masterData, rows, {
         supplierName: meta.supplierName,
@@ -219,11 +339,26 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
         note: rawInvoice?.note || '',
       });
 
-      XLSX.writeFile(workbook, fileName);
+      writeXlsxFile(workbook, fileName);
+      setExportWarningModal(null);
     } catch (err: any) {
       console.error('Export Excel failed:', err);
       setExportWarningModal([`Lỗi xuất file Excel: ${err.message}`]);
     }
+  };
+
+  // Export to iPOS Excel Workbook
+  const handleExportExcel = () => {
+    if (!masterData) return;
+
+    const validation = validateForExport(rows);
+
+    if (!validation.canExport) {
+      setExportWarningModal(validation.errors.length > 0 ? validation.errors : validation.warnings);
+      return;
+    }
+
+    executeExport();
   };
 
   // Filtered rows
@@ -398,9 +533,17 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
         </button>
 
         <div className="p-3.5 rounded-2xl border border-slate-200 bg-white col-span-2 sm:col-span-1">
-          <div className="text-[11px] font-semibold text-slate-500 uppercase">Tổng tiền phiếu</div>
-          <div className="text-sm font-bold text-emerald-700 mt-1 truncate">
-            {formatVND(totalInvoiceAmount)}
+          <div className="text-[10px] font-semibold text-slate-500 uppercase">Tổng tiền hàng</div>
+          <div className="text-xs font-semibold text-slate-700 mt-0.5 truncate">
+            {formatVND(totalInvoiceSubTotal)}
+          </div>
+          <div className="text-[10px] text-slate-500 mt-1 flex justify-between">
+            <span>Thuế:</span>
+            <span className="font-semibold text-amber-700">{formatVND(totalInvoiceVatAmount)}</span>
+          </div>
+          <div className="border-t border-slate-100 pt-1 mt-1 flex justify-between items-baseline">
+            <span className="text-[10px] font-bold text-slate-800 uppercase">Tổng cộng:</span>
+            <span className="text-xs font-bold text-emerald-700">{formatVND(totalInvoiceAmount)}</span>
           </div>
         </div>
       </div>
@@ -447,12 +590,37 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
             {/* Table Search & Filter Bar */}
             <div className="p-3.5 bg-slate-50/70 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="flex items-center space-x-2 text-xs font-semibold text-slate-700">
+              <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-700">
                 <span>Danh sách {visibleRows.length}/{totalRows} dòng</span>
+
+                {/* Auto Learn Toggle */}
+                <label className="flex items-center space-x-1.5 cursor-pointer select-none bg-amber-50 hover:bg-amber-100 text-amber-900 px-2.5 py-1 rounded-lg border border-amber-200 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={autoLearnAlias}
+                    onChange={(e) => setAutoLearnAlias(e.target.checked)}
+                    className="rounded text-amber-600 focus:ring-amber-500 w-3.5 h-3.5"
+                  />
+                  <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                  <span className="text-[11px]">Tự động lưu từ điển Alias khi chọn lại mã</span>
+                </label>
+
+                {onOpenAliasManager && (
+                  <button
+                    type="button"
+                    onClick={onOpenAliasManager}
+                    className="flex items-center space-x-1 px-2.5 py-1 text-[11px] font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg shadow-2xs transition-colors"
+                    title="Mở quản lý Từ điển Alias (Quy tắc ghi nhớ tên theo từng NCC)"
+                  >
+                    <BookOpen className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Từ điển ({learnedAliases.length})</span>
+                  </button>
+                )}
+
                 {saveAliasSuccessRowId && (
                   <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded text-[11px] flex items-center space-x-1 animate-fade-in">
                     <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                    <span>Đã lưu quy tắc Alias!</span>
+                    <span>Đã lưu vào Từ điển!</span>
                   </span>
                 )}
               </div>
@@ -469,6 +637,57 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
               </div>
             </div>
 
+            {/* Rich Alias Notification Banner */}
+            {aliasSavedToast && (
+              <div className="p-3 bg-amber-50/90 border-b border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-amber-950 animate-fade-in">
+                <div className="flex items-center space-x-2.5">
+                  <span className="p-1.5 bg-amber-200 text-amber-900 rounded-lg shrink-0">
+                    <Sparkles className="w-4 h-4" />
+                  </span>
+                  <div>
+                    <div className="font-bold flex items-center space-x-1.5">
+                      <span>Đã lưu vào Từ điển Alias cho lần quét tới</span>
+                      <span className="text-[10px] px-1.5 py-0.2 bg-amber-200 text-amber-900 rounded font-semibold">
+                        {aliasSavedToast.supplierId === '*'
+                          ? 'Tất cả NCC (*)'
+                          : `NCC: ${aliasSavedToast.supplierName}`}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-amber-900 mt-0.5">
+                      Hàng viết trên phiếu: <span className="font-semibold bg-white/70 px-1 py-0.5 rounded border border-amber-200">"{aliasSavedToast.rawName}"</span> ➔ Mã iPOS: <strong className="font-mono text-emerald-800">[{aliasSavedToast.itemId}] {aliasSavedToast.itemName}</strong>
+                      <span className="ml-1.5 text-amber-700 italic">(Lần quét sau sẽ tự động khớp 100%!)</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-2 shrink-0">
+                  {aliasSavedToast.supplierId !== '*' && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleConvertAliasToGlobal(
+                          aliasSavedToast.rawName,
+                          aliasSavedToast.itemId,
+                          aliasSavedToast.itemName
+                        )
+                      }
+                      className="px-2.5 py-1 bg-white hover:bg-amber-100 border border-amber-300 rounded-lg text-[11px] font-semibold text-amber-900 transition-colors shadow-2xs"
+                      title="Cho phép áp dụng cho tất cả nhà cung cấp thay vì chỉ NCC hiện tại"
+                    >
+                      Áp dụng cho mọi NCC (*)
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setAliasSavedToast(null)}
+                    className="p-1 text-amber-700 hover:text-amber-950 rounded hover:bg-amber-200/60 transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Scrollable Sticky Header Table */}
             <div className="overflow-x-auto max-h-[620px]">
               <table className="w-full text-left text-xs border-collapse">
@@ -476,14 +695,18 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                   <tr>
                     <th className="px-3 py-3 w-12 text-center">Trạng thái</th>
                     <th className="px-2 py-3 w-10 text-center">STT</th>
-                    <th className="px-3 py-3 w-48">Hàng viết trên phiếu (Raw)</th>
-                    <th className="px-3 py-3 min-w-[260px]">Mã & Tên hàng iPOS (*)</th>
+                    <th className="px-3 py-3 w-44">Hàng viết trên phiếu (Raw)</th>
+                    <th className="px-3 py-3 min-w-[240px]">Mã & Tên hàng iPOS (*)</th>
                     <th className="px-2 py-3 w-28">ĐVT (*)</th>
                     <th className="px-2 py-3 w-24 text-right">Số lượng (*)</th>
                     <th className="px-2 py-3 w-28 text-right">Đơn giá</th>
-                    <th className="px-2 py-3 w-20 text-center">VAT (%)</th>
                     <th className="px-2 py-3 w-28 text-right">Thành tiền</th>
-                    <th className="px-3 py-3 min-w-[180px]">Cảnh báo & Quy tắc</th>
+                    <th className="px-2 py-3 w-20 text-center">VAT (%)</th>
+                    <th className="px-2 py-3 w-24 text-right">Tiền thuế</th>
+                    <th className="px-2 py-3 w-28 text-right font-bold text-emerald-900 bg-emerald-100/50">
+                      Tổng tiền (*)
+                    </th>
+                    <th className="px-3 py-3 min-w-[160px]">Cảnh báo & Quy tắc</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -494,6 +717,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                     const currentItem =
                       masterData?.items?.find((i) => i.itemId === row.item_id) ||
                       row.selectedCandidate;
+                    const itemPrimaryUnitId = currentItem?.unitId?.trim();
                     const itemPrimaryUnit = currentItem?.unitName?.trim();
 
                     // Collect convertible units for this specific item
@@ -505,15 +729,31 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                           c.itemId === row.item_id ||
                           (currentItem && c.itemName === currentItem.itemName)
                         ) {
-                          if (c.sourceUnitName && !itemConversionUnits.includes(c.sourceUnitName.trim())) {
+                          if (c.sourceUnitName && !itemConversionUnits.some((u) => isSameOrEquivalentUnit(u, c.sourceUnitName))) {
                             itemConversionUnits.push(c.sourceUnitName.trim());
                           }
-                          if (c.targetUnitName && !itemConversionUnits.includes(c.targetUnitName.trim())) {
+                          if (c.targetUnitName && !itemConversionUnits.some((u) => isSameOrEquivalentUnit(u, c.targetUnitName))) {
                             itemConversionUnits.push(c.targetUnitName.trim());
                           }
                         }
                       }
                     }
+
+                    // Find active conversions matching this row's item or units
+                    const activeConversions = (masterData?.unitConversions || []).filter((c) => {
+                      const itemMatch = !c.itemId || c.itemId === row.item_id || (currentItem && c.itemName === currentItem.itemName);
+                      if (!itemMatch) return false;
+                      return (
+                        isSameOrEquivalentUnit(c.sourceUnitName, row.unit) ||
+                        isSameOrEquivalentUnit(c.targetUnitName, row.unit) ||
+                        isSameOrEquivalentUnit(c.sourceUnitName, row.raw.raw_unit) ||
+                        isSameOrEquivalentUnit(c.targetUnitName, row.raw.raw_unit) ||
+                        isSameOrEquivalentUnit(c.sourceUnitName, itemPrimaryUnitId) ||
+                        isSameOrEquivalentUnit(c.targetUnitName, itemPrimaryUnitId) ||
+                        isSameOrEquivalentUnit(c.sourceUnitName, itemPrimaryUnit) ||
+                        isSameOrEquivalentUnit(c.targetUnitName, itemPrimaryUnit)
+                      );
+                    });
 
                     // Row status color theme
                     const statusConfig = {
@@ -568,11 +808,22 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                         {/* Raw Item Name */}
                         <td className="px-3 py-2.5 text-slate-800">
                           <div className="font-medium">{row.raw_item_name}</div>
-                          {row.raw.raw_unit && (
-                            <div className="text-[10px] text-slate-500 mt-0.5">
-                              ĐVT phiếu: <span className="font-mono">{row.raw.raw_unit}</span>
-                            </div>
-                          )}
+                          <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                            {row.raw.raw_unit && (
+                              <span className="text-[10px] text-slate-500">
+                                ĐVT phiếu: <span className="font-mono font-medium">{row.raw.raw_unit}</span>
+                              </span>
+                            )}
+                            {row.learnedAliasApplied && (
+                              <span
+                                className="inline-flex items-center space-x-1 text-[9px] font-semibold text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200"
+                                title="Mặt hàng này đã được lưu vào Từ điển Alias cho nhà cung cấp này"
+                              >
+                                <Sparkles className="w-2.5 h-2.5 text-amber-600" />
+                                <span>Đã lưu Alias</span>
+                              </span>
+                            )}
+                          </div>
                         </td>
 
                         {/* iPOS Catalog Combobox */}
@@ -600,7 +851,17 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                                   <span>-- Chưa gán mã hàng iPOS --</span>
                                 )}
                               </div>
-                              <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                              <div className="flex items-center space-x-1 shrink-0">
+                                {row.learnedAliasApplied && (
+                                  <span
+                                    className="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-amber-100 text-amber-900 border border-amber-200"
+                                    title="Khớp hoặc đã lưu theo từ điển Alias NCC"
+                                  >
+                                    ★ Alias
+                                  </span>
+                                )}
+                                <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                              </div>
                             </button>
 
                             {/* Dropdown Menu */}
@@ -609,6 +870,29 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                                 onClick={(e) => e.stopPropagation()}
                                 className="absolute left-0 top-full mt-1 w-96 bg-white border border-slate-300 rounded-xl shadow-xl z-50 p-2 space-y-2 text-xs"
                               >
+                                {/* Auto-learning notice in dropdown */}
+                                <div className="flex items-center justify-between px-2.5 py-1.5 bg-amber-50 rounded-lg border border-amber-200/80 text-[11px] text-amber-950">
+                                  <div className="flex items-center space-x-1.5">
+                                    <Sparkles className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                                    <span className="font-semibold">Lưu Từ điển Alias cho lần quét sau</span>
+                                  </div>
+                                  <label className="flex items-center space-x-1 cursor-pointer select-none">
+                                    <input
+                                      type="checkbox"
+                                      checked={autoLearnAlias}
+                                      onChange={(e) => setAutoLearnAlias(e.target.checked)}
+                                      className="rounded text-amber-600 focus:ring-amber-500 w-3.5 h-3.5"
+                                    />
+                                    <span className="text-[10px] text-slate-700 font-bold">{autoLearnAlias ? 'Bật' : 'Tắt'}</span>
+                                  </label>
+                                </div>
+                                <div className="text-[10px] text-slate-500 px-1 flex items-center justify-between">
+                                  <span>Áp dụng cho: <strong className="text-slate-700">{meta.supplierName || 'Tất cả NCC'}</strong></span>
+                                  <span className="text-[9px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-600 font-mono truncate max-w-[160px]">
+                                    "{row.raw_item_name}"
+                                  </span>
+                                </div>
+
                                 {/* Combobox Search */}
                                 <input
                                   type="text"
@@ -633,7 +917,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                                     {row.candidates.map((cand) => (
                                       <div
                                         key={cand.item.itemId}
-                                        onClick={() => handleSelectCandidate(row.id, cand.item, false)}
+                                        onClick={() => handleSelectCandidate(row.id, cand.item, autoLearnAlias)}
                                         className="p-2 hover:bg-slate-100 rounded-lg cursor-pointer flex items-center justify-between group"
                                       >
                                         <div>
@@ -666,7 +950,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                                             e.stopPropagation();
                                             handleSelectCandidate(row.id, cand.item, true);
                                           }}
-                                          className="text-[10px] px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded border border-amber-200 hidden group-hover:block"
+                                          className="text-[10px] px-2 py-1 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded font-medium border border-amber-300 shrink-0"
                                           title="Lưu quy tắc alias này cho các hóa đơn sau"
                                         >
                                           Lưu Alias
@@ -695,8 +979,8 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                                       .map((it) => (
                                         <div
                                           key={it.itemId}
-                                          onClick={() => handleSelectCandidate(row.id, it, false)}
-                                          className="p-1.5 hover:bg-emerald-50 rounded cursor-pointer flex items-center justify-between"
+                                          onClick={() => handleSelectCandidate(row.id, it, autoLearnAlias)}
+                                          className="p-1.5 hover:bg-emerald-50 rounded-lg cursor-pointer flex items-center justify-between group"
                                         >
                                           <div className="truncate pr-2">
                                             <span className="font-mono text-slate-600 font-medium mr-1.5">
@@ -704,10 +988,23 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                                             </span>
                                             <span className="text-slate-800">{it.itemName}</span>
                                           </div>
-                                          <span className="text-[10px] px-1.5 py-0.5 bg-slate-100 rounded text-slate-600 shrink-0">
-                                            {it.unitName || it.unitId || '—'}
-                                            {it.unitId && it.unitName && it.unitId !== it.unitName ? ` (${it.unitId})` : ''}
-                                          </span>
+                                          <div className="flex items-center space-x-1.5 shrink-0">
+                                            <span className="text-[10px] px-1.5 py-0.5 bg-slate-100 rounded text-slate-600">
+                                              {it.unitName || it.unitId || '—'}
+                                              {it.unitId && it.unitName && it.unitId !== it.unitName ? ` (${it.unitId})` : ''}
+                                            </span>
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleSelectCandidate(row.id, it, true);
+                                              }}
+                                              className="text-[10px] px-1.5 py-0.5 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded border border-amber-200 hidden group-hover:block"
+                                              title="Chọn và lưu vào Từ điển Alias cho lần quét sau"
+                                            >
+                                              Lưu Alias
+                                            </button>
+                                          </div>
                                         </div>
                                       ))}
                                   </div>
@@ -719,103 +1016,205 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
 
                         {/* Unit (ĐVT) - Smart Option Select Box */}
                         <td className="px-2 py-2.5">
-                          <div className="space-y-1">
-                            <div className="relative">
-                              <select
-                                value={row.unit || ''}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  if (val === '__custom__') {
-                                    const custom = prompt(
-                                      'Nhập Đơn vị tính mới cho dòng này (VD: thùng, lon, khay, kg...):'
-                                    );
-                                    if (custom && custom.trim()) {
-                                      handleUpdateRow(row.id, { unit: custom.trim() });
-                                    }
-                                  } else {
-                                    handleUpdateRow(row.id, { unit: val });
-                                  }
-                                }}
-                                className={`w-full min-w-[88px] px-2 py-1 text-xs font-semibold rounded-lg border appearance-none pr-5 cursor-pointer transition-all shadow-2xs focus:ring-2 focus:ring-emerald-500 focus:outline-none ${
-                                  !row.unit
-                                    ? 'bg-rose-50 border-rose-300 text-rose-700'
-                                    : itemPrimaryUnit && normalizeText(row.unit) === normalizeText(itemPrimaryUnit)
-                                    ? 'bg-emerald-50/80 border-emerald-300 text-emerald-800'
-                                    : itemConversionUnits.some((u) => normalizeText(u) === normalizeText(row.unit))
-                                    ? 'bg-blue-50/80 border-blue-300 text-blue-800'
-                                    : 'bg-white border-slate-300 text-slate-800 hover:border-slate-400'
-                                }`}
-                              >
-                                <option value="" disabled>
-                                  -- Chọn ĐVT --
-                                </option>
+                          {(() => {
+                            const isPrimaryUnitMatch =
+                              isSameOrEquivalentUnit(row.unit, itemPrimaryUnitId) ||
+                              isSameOrEquivalentUnit(row.unit, itemPrimaryUnit);
 
-                                {/* Item standard unit */}
-                                {itemPrimaryUnit && (
-                                  <optgroup label="⭐ ĐVT chuẩn của hàng">
-                                    <option value={itemPrimaryUnit}>
-                                      {itemPrimaryUnit} (Chuẩn iPOS)
+                            const isConvUnitMatch = itemConversionUnits.some((u) =>
+                              isSameOrEquivalentUnit(u, row.unit)
+                            );
+
+                            let selectDisplayValue = row.unit || '';
+                            if (isPrimaryUnitMatch) {
+                              selectDisplayValue = itemPrimaryUnitId || itemPrimaryUnit || row.unit || '';
+                            } else {
+                              const matchedConv = itemConversionUnits.find((u) =>
+                                isSameOrEquivalentUnit(u, row.unit)
+                              );
+                              if (matchedConv) {
+                                selectDisplayValue = matchedConv;
+                              } else {
+                                const matchedSys = availableUnits.find((u) =>
+                                  isSameOrEquivalentUnit(u, row.unit)
+                                );
+                                if (matchedSys) {
+                                  selectDisplayValue = matchedSys;
+                                }
+                              }
+                            }
+
+                            return (
+                              <div className="space-y-1">
+                                <div className="relative">
+                                  <select
+                                    value={selectDisplayValue}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      if (val === '__custom__') {
+                                        const custom = prompt(
+                                          'Nhập Đơn vị tính mới cho dòng này (VD: thùng, lon, khay, kg...):'
+                                        );
+                                        if (custom && custom.trim()) {
+                                          handleUpdateRow(row.id, { unit: custom.trim(), isManuallyConfirmed: true });
+                                        }
+                                      } else {
+                                        handleUpdateRow(row.id, { unit: val, isManuallyConfirmed: true });
+                                      }
+                                    }}
+                                    className={`w-full min-w-[88px] px-2 py-1 text-xs font-semibold rounded-lg border appearance-none pr-5 cursor-pointer transition-all shadow-2xs focus:ring-2 focus:ring-emerald-500 focus:outline-none ${
+                                      !row.unit
+                                        ? 'bg-rose-50 border-rose-300 text-rose-700'
+                                        : isPrimaryUnitMatch
+                                        ? 'bg-emerald-50/80 border-emerald-300 text-emerald-800'
+                                        : isConvUnitMatch
+                                        ? 'bg-blue-50/80 border-blue-300 text-blue-800'
+                                        : 'bg-white border-slate-300 text-slate-800 hover:border-slate-400'
+                                    }`}
+                                  >
+                                    <option value="" disabled>
+                                      -- Chọn ĐVT --
                                     </option>
-                                  </optgroup>
-                                )}
 
-                                {/* Convertible units */}
-                                {itemConversionUnits.filter(
-                                  (u) => normalizeText(u) !== normalizeText(itemPrimaryUnit)
-                                ).length > 0 && (
-                                  <optgroup label="🔄 ĐVT quy đổi iPOS">
-                                    {itemConversionUnits
-                                      .filter((u) => normalizeText(u) !== normalizeText(itemPrimaryUnit))
-                                      .map((u) => (
-                                        <option key={`conv-${u}`} value={u}>
-                                          {u} (Quy đổi)
+                                    {/* Item standard primary unit */}
+                                    {(itemPrimaryUnitId || itemPrimaryUnit) && (
+                                      <optgroup label="⭐ ĐVT chuẩn của hàng (iPOS)">
+                                        <option value={itemPrimaryUnitId || itemPrimaryUnit}>
+                                          {itemPrimaryUnitId
+                                            ? `${itemPrimaryUnitId}${itemPrimaryUnit && itemPrimaryUnit.toUpperCase() !== itemPrimaryUnitId ? ` (${itemPrimaryUnit})` : ''} - Chuẩn iPOS`
+                                            : `${itemPrimaryUnit} - Chuẩn iPOS`}
                                         </option>
-                                      ))}
-                                  </optgroup>
+                                      </optgroup>
+                                    )}
+
+                                    {/* Convertible units */}
+                                    {itemConversionUnits.filter(
+                                      (u) =>
+                                        !isSameOrEquivalentUnit(u, itemPrimaryUnitId) &&
+                                        !isSameOrEquivalentUnit(u, itemPrimaryUnit)
+                                    ).length > 0 && (
+                                      <optgroup label="🔄 ĐVT quy đổi iPOS">
+                                        {itemConversionUnits
+                                          .filter(
+                                            (u) =>
+                                              !isSameOrEquivalentUnit(u, itemPrimaryUnitId) &&
+                                              !isSameOrEquivalentUnit(u, itemPrimaryUnit)
+                                          )
+                                          .map((u) => (
+                                            <option key={`conv-${u}`} value={u}>
+                                              {u} (Quy đổi)
+                                            </option>
+                                          ))}
+                                      </optgroup>
+                                    )}
+
+                                    {/* Current row unit if not in primary, conversions, or system list */}
+                                    {row.unit &&
+                                      !isPrimaryUnitMatch &&
+                                      !isConvUnitMatch &&
+                                      !availableUnits.some((u) => isSameOrEquivalentUnit(u, row.unit)) && (
+                                        <optgroup label="⚠️ ĐVT trên phiếu (Chưa chuẩn)">
+                                          <option value={row.unit}>{row.unit} (Trên phiếu)</option>
+                                        </optgroup>
+                                      )}
+
+                                    {/* All system UOMs */}
+                                    <optgroup label="📋 Danh mục ĐVT hệ thống">
+                                      {availableUnits
+                                        .filter(
+                                          (u) =>
+                                            !isSameOrEquivalentUnit(u, itemPrimaryUnitId) &&
+                                            !isSameOrEquivalentUnit(u, itemPrimaryUnit)
+                                        )
+                                        .map((u) => (
+                                          <option key={u} value={u}>
+                                            {u}
+                                          </option>
+                                        ))}
+                                    </optgroup>
+
+                                    <optgroup label="⚙️ Tùy chọn khác">
+                                      <option value="__custom__">+ Nhập ĐVT tùy chỉnh...</option>
+                                    </optgroup>
+                                  </select>
+                                  <ChevronDown className="w-3 h-3 text-slate-400 absolute right-1.5 top-2 pointer-events-none" />
+                                </div>
+
+                                {/* Quick Unit Switch Badge: ONLY shown if unit differs and is not equivalent to standard */}
+                                {(itemPrimaryUnitId || itemPrimaryUnit) && !isPrimaryUnitMatch && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const targetUnit = itemPrimaryUnitId || itemPrimaryUnit || '';
+                                      handleUpdateRow(row.id, { unit: targetUnit, isManuallyConfirmed: true });
+                                    }}
+                                    className="text-[10px] text-emerald-700 bg-emerald-100/80 hover:bg-emerald-200 px-1.5 py-0.5 rounded font-mono font-medium block truncate max-w-full text-left transition-colors"
+                                    title={`Chuyển ngay sang ĐVT chuẩn iPOS: ${itemPrimaryUnitId || itemPrimaryUnit}`}
+                                  >
+                                    ➜ ĐVT chuẩn: {itemPrimaryUnitId || itemPrimaryUnit}
+                                  </button>
                                 )}
 
-                                {/* Current row unit if not in system list */}
-                                {row.unit &&
-                                  !availableUnits.includes(row.unit.trim()) &&
-                                  normalizeText(row.unit) !== normalizeText(itemPrimaryUnit) && (
-                                    <optgroup label="⚠️ ĐVT trên phiếu (Chưa chuẩn)">
-                                      <option value={row.unit}>{row.unit} (Trên phiếu)</option>
-                                    </optgroup>
-                                  )}
+                                {/* Unit Conversion Formula & Auto Calculation Helper */}
+                                {activeConversions.map((conv, cIdx) => {
+                                  const isSource = isSameOrEquivalentUnit(row.unit, conv.sourceUnitName);
+                                  const isTarget = isSameOrEquivalentUnit(row.unit, conv.targetUnitName);
 
-                                {/* All system UOMs */}
-                                <optgroup label="📋 Danh mục ĐVT hệ thống">
-                                  {availableUnits
-                                    .filter((u) => normalizeText(u) !== normalizeText(itemPrimaryUnit))
-                                    .map((u) => (
-                                      <option key={u} value={u}>
-                                        {u}
-                                      </option>
-                                    ))}
-                                </optgroup>
-
-                                <optgroup label="⚙️ Tùy chọn khác">
-                                  <option value="__custom__">+ Nhập ĐVT tùy chỉnh...</option>
-                                </optgroup>
-                              </select>
-                              <ChevronDown className="w-3 h-3 text-slate-400 absolute right-1.5 top-2 pointer-events-none" />
-                            </div>
-
-                            {/* Quick Unit Switch Badge */}
-                            {itemPrimaryUnit && normalizeText(row.unit) !== normalizeText(itemPrimaryUnit) && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleUpdateRow(row.id, { unit: itemPrimaryUnit });
-                                }}
-                                className="text-[10px] text-emerald-700 bg-emerald-100/80 hover:bg-emerald-200 px-1.5 py-0.5 rounded font-mono font-medium block truncate max-w-full text-left transition-colors"
-                                title={`Chuyển ngay sang ĐVT chuẩn iPOS: ${itemPrimaryUnit}`}
-                              >
-                                ➜ Dùng "{itemPrimaryUnit}"
-                              </button>
-                            )}
-                          </div>
+                                  if (isSource && conv.conversionRate > 0) {
+                                    return (
+                                      <button
+                                        key={cIdx}
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const oldQty = row.quantity || 1;
+                                          const oldPrice = row.price || 0;
+                                          const newQty = Math.round(oldQty * conv.conversionRate * 1000) / 1000;
+                                          const newPrice = oldPrice > 0 ? Math.round((oldPrice / conv.conversionRate) * 100) / 100 : oldPrice;
+                                          handleUpdateRow(row.id, {
+                                            unit: conv.targetUnitName,
+                                            quantity: newQty,
+                                            price: newPrice,
+                                            isManuallyConfirmed: true,
+                                          });
+                                        }}
+                                        className="text-[10px] text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-1.5 py-0.5 rounded font-mono font-semibold block truncate max-w-full text-left transition-colors mt-0.5"
+                                        title={`Quy đổi tự động: 1 ${conv.sourceUnitName} = ${conv.conversionRate} ${conv.targetUnitName}. Số lượng x${conv.conversionRate}, đơn giá /${conv.conversionRate} (Thành tiền không đổi)`}
+                                      >
+                                        🔄 Sang {conv.targetUnitName} (×{conv.conversionRate})
+                                      </button>
+                                    );
+                                  } else if (isTarget && conv.conversionRate > 0) {
+                                    return (
+                                      <button
+                                        key={cIdx}
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const oldQty = row.quantity || conv.conversionRate;
+                                          const oldPrice = row.price || 0;
+                                          const newQty = Math.round((oldQty / conv.conversionRate) * 1000) / 1000;
+                                          const newPrice = oldPrice > 0 ? Math.round(oldPrice * conv.conversionRate) : oldPrice;
+                                          handleUpdateRow(row.id, {
+                                            unit: conv.sourceUnitName,
+                                            quantity: newQty,
+                                            price: newPrice,
+                                            isManuallyConfirmed: true,
+                                          });
+                                        }}
+                                        className="text-[10px] text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-1.5 py-0.5 rounded font-mono font-semibold block truncate max-w-full text-left transition-colors mt-0.5"
+                                        title={`Quy đổi ngược: ${conv.conversionRate} ${conv.targetUnitName} = 1 ${conv.sourceUnitName}. Số lượng ÷${conv.conversionRate}, đơn giá x${conv.conversionRate} (Thành tiền không đổi)`}
+                                      >
+                                        🔄 Sang {conv.sourceUnitName} (÷{conv.conversionRate})
+                                      </button>
+                                    );
+                                  }
+                                  return null;
+                                })}
+                              </div>
+                            );
+                          })()}
                         </td>
 
                         {/* Quantity */}
@@ -852,6 +1251,11 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                           />
                         </td>
 
+                        {/* Thành tiền (Số lượng * Đơn giá) */}
+                        <td className="px-2 py-2.5 text-right font-mono font-medium text-slate-700">
+                          {formatVND(row.sub_total)}
+                        </td>
+
                         {/* VAT (%) Option Select Box */}
                         <td className="px-2 py-2.5 text-center">
                           <div className="relative">
@@ -872,9 +1276,25 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                           </div>
                         </td>
 
-                        {/* Subtotal */}
-                        <td className="px-2 py-2.5 text-right font-mono font-bold text-slate-700">
-                          {formatVND(row.sub_total)}
+                        {/* Tiền thuế VAT */}
+                        <td className="px-2 py-2.5 text-right font-mono text-[11px] text-amber-900">
+                          {formatVND(
+                            row.amount_vat !== null && row.amount_vat !== undefined
+                              ? row.amount_vat
+                              : ((row.sub_total || 0) * (row.vat || 0)) / 100
+                          )}
+                        </td>
+
+                        {/* Tổng tiền (Số lượng * Đơn giá + Thuế) */}
+                        <td className="px-2 py-2.5 text-right font-mono font-bold text-emerald-800 bg-emerald-50/40">
+                          {formatVND(
+                            row.total_amount !== null && row.total_amount !== undefined
+                              ? row.total_amount
+                              : (row.sub_total || 0) +
+                                  (row.amount_vat !== null && row.amount_vat !== undefined
+                                    ? row.amount_vat
+                                    : ((row.sub_total || 0) * (row.vat || 0)) / 100)
+                          )}
                         </td>
 
                         {/* Warnings & Action Badges */}
@@ -883,7 +1303,11 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                             {row.warnings.map((w, wIdx) => (
                               <div
                                 key={wIdx}
-                                className="text-[11px] text-amber-800 bg-amber-50/80 px-2 py-0.5 rounded border border-amber-200/80"
+                                className={`text-[11px] px-2 py-0.5 rounded border ${
+                                  row.status === 'RED'
+                                    ? 'text-rose-800 bg-rose-50/90 border-rose-200 font-medium'
+                                    : 'text-amber-800 bg-amber-50/80 border-amber-200/80'
+                                }`}
                               >
                                 {w}
                               </div>
@@ -892,6 +1316,15 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                             {row.learnedAliasApplied && (
                               <div className="text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 font-medium inline-block">
                                 ★ Đã áp dụng Alias học được
+                              </div>
+                            )}
+
+                            {currentItem?.autoInferredUnit && (
+                              <div
+                                className="text-[10px] text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 font-medium inline-block"
+                                title={currentItem.warning || 'ĐVT chính tự động suy luận từ tỷ lệ quy đổi 1000 GR'}
+                              >
+                                💡 ĐVT chính (KG) tự suy luận từ 1000 GR
                               </div>
                             )}
 
@@ -909,12 +1342,56 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
 
                   {visibleRows.length === 0 && (
                     <tr>
-                      <td colSpan={10} className="py-12 text-center text-slate-400">
+                      <td colSpan={12} className="py-12 text-center text-slate-400">
                         Không có dòng hàng nào trong bộ lọc này
                       </td>
                     </tr>
                   )}
                 </tbody>
+                {visibleRows.length > 0 && (
+                  <tfoot className="bg-slate-50 font-semibold border-t-2 border-slate-300 text-slate-800">
+                    <tr>
+                      <td colSpan={5} className="px-3 py-3 text-right text-xs uppercase tracking-wider text-slate-600">
+                        Tổng cộng ({visibleRows.length} dòng):
+                      </td>
+                      <td className="px-2 py-3 text-right font-mono text-xs">
+                        {visibleRows.reduce((sum, r) => sum + (r.quantity || 0), 0)}
+                      </td>
+                      <td className="px-2 py-3"></td>
+                      <td className="px-2 py-3 text-right font-mono text-xs text-slate-700">
+                        {formatVND(
+                          visibleRows.reduce(
+                            (sum, r) =>
+                              sum + (r.sub_total ?? (r.quantity || 0) * (r.price || 0)),
+                            0
+                          )
+                        )}
+                      </td>
+                      <td className="px-2 py-3"></td>
+                      <td className="px-2 py-3 text-right font-mono text-xs text-amber-800">
+                        {formatVND(
+                          visibleRows.reduce((sum, r) => {
+                            const sub = r.sub_total ?? (r.quantity || 0) * (r.price || 0);
+                            return sum + (r.amount_vat ?? (sub * (r.vat || 0)) / 100);
+                          }, 0)
+                        )}
+                      </td>
+                      <td className="px-2 py-3 text-right font-mono font-bold text-xs text-emerald-800 bg-emerald-100/50">
+                        {formatVND(
+                          visibleRows.reduce((sum, r) => {
+                            if (r.total_amount !== null && r.total_amount !== undefined) {
+                              return sum + r.total_amount;
+                            }
+                            const sub = r.sub_total ?? (r.quantity || 0) * (r.price || 0);
+                            const vat = r.amount_vat ?? (sub * (r.vat || 0)) / 100;
+                            return sum + sub + vat;
+                          }, 0)
+                        )}
+                      </td>
+                      <td className="px-3 py-3"></td>
+                    </tr>
+                  </tfoot>
+                )}
               </table>
             </div>
           </div>
@@ -926,34 +1403,41 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
             <div className="flex items-start space-x-3">
-              <div className="p-2 bg-rose-100 text-rose-600 rounded-xl">
+              <div className="p-2 bg-amber-100 text-amber-600 rounded-xl">
                 <AlertCircle className="w-6 h-6" />
               </div>
               <div>
                 <h3 className="text-base font-bold text-slate-900">
-                  Không thể xuất Excel - Còn dòng chưa hợp lệ
+                  Cảnh báo xuất file Excel iPOS
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Phần mềm iPOS Inventory yêu cầu tất cả các dòng phải có Mã hàng, ĐVT và Số lượng hợp lệ (&gt; 0).
+                  Phát hiện một số dòng chưa khớp hoàn toàn hoặc có cảnh báo. Bạn vẫn có thể xuất file ngay hoặc ở lại chỉnh sửa.
                 </p>
               </div>
             </div>
 
-            <div className="bg-rose-50/80 border border-rose-200 rounded-xl p-3 max-h-48 overflow-y-auto space-y-1.5 text-xs text-rose-800 font-medium">
+            <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-3 max-h-48 overflow-y-auto space-y-1.5 text-xs text-amber-900 font-medium">
               {exportWarningModal.map((err, i) => (
                 <div key={i} className="flex items-start space-x-2">
-                  <span className="text-rose-500 font-bold">•</span>
+                  <span className="text-amber-600 font-bold">•</span>
                   <span>{err}</span>
                 </div>
               ))}
             </div>
 
-            <div className="flex justify-end space-x-3 pt-2">
+            <div className="flex justify-end items-center space-x-3 pt-2">
               <button
                 onClick={() => setExportWarningModal(null)}
                 className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl transition-colors"
               >
-                Đóng và chỉnh sửa
+                Xem lại & Chỉnh sửa
+              </button>
+              <button
+                onClick={executeExport}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-sm transition-colors flex items-center space-x-1.5"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Vẫn xuất file Excel</span>
               </button>
             </div>
           </div>

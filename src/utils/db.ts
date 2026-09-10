@@ -98,6 +98,65 @@ export async function saveMasterData(data: IposMasterData): Promise<void> {
 }
 
 /**
+ * Self-heal and migrate Master Data units if damaged or missing
+ */
+export function healMasterDataUnits(data: IposMasterData): boolean {
+  if (!data || !Array.isArray(data.items)) return false;
+  let hasChanges = false;
+  const convs = data.unitConversions || [];
+
+  for (const it of data.items) {
+    // Specific check for CP22 or items missing primary unit
+    if (it.itemId === 'CP22' && (!it.unitId || !it.unitName || it.unitId.toUpperCase() === 'GR')) {
+      it.unitId = 'KG';
+      it.unitName = 'Kg';
+      it.autoInferredUnit = true;
+      it.warning = 'Mã CP22 thiếu ĐVT chính trong file Excel gốc, hệ thống đã tự động gán KG theo tỷ lệ 1000 GR';
+      hasChanges = true;
+    } else if (!it.unitId && !it.unitName) {
+      // Find if this item has a 1000 GR conversion
+      const c = convs.find((cv) => cv.itemId === it.itemId || cv.itemName === it.itemName);
+      if (c && (c.sourceUnitName?.toUpperCase() === 'GR' || c.targetUnitName?.toUpperCase() === 'GR') && c.conversionRate === 1000) {
+        it.unitId = 'KG';
+        it.unitName = 'Kg';
+        it.autoInferredUnit = true;
+        it.warning = `Mã ${it.itemId} thiếu ĐVT chính trong file Excel gốc, hệ thống đã tự động gán KG theo tỷ lệ 1000 GR`;
+        hasChanges = true;
+      }
+    }
+  }
+
+  // Also ensure conversion direction: source is primary unit (KG), target is conversion unit (GR)
+  for (const c of convs) {
+    if (c.sourceUnitName?.toUpperCase() === 'GR' && c.conversionRate === 1000) {
+      const it = data.items.find((i) => i.itemId === c.itemId || i.itemName === c.itemName);
+      const primary = it?.unitName || it?.unitId || 'Kg';
+      c.sourceUnitName = primary;
+      c.targetUnitName = 'GR';
+      hasChanges = true;
+    }
+  }
+
+  // If CP22 is missing a conversion, ensure it is registered
+  const hasCp22Conv = convs.some((c) => c.itemId === 'CP22' || c.itemName?.includes('Đu đủ'));
+  const hasCp22Item = data.items.some((i) => i.itemId === 'CP22');
+  if (hasCp22Item && !hasCp22Conv) {
+    convs.push({
+      itemId: 'CP22',
+      itemName: 'Đu đủ ương 木瓜',
+      sourceUnitName: 'Kg',
+      targetUnitName: 'GR',
+      conversionRate: 1000,
+      description: '1 Kg = 1000 GR (Tự động suy luận)',
+    });
+    data.unitConversions = convs;
+    hasChanges = true;
+  }
+
+  return hasChanges;
+}
+
+/**
  * Load Master Data from IndexedDB
  */
 export async function loadMasterData(): Promise<IposMasterData | null> {
@@ -110,7 +169,12 @@ export async function loadMasterData(): Promise<IposMasterData | null> {
       req.onsuccess = () => {
         if (req.result) {
           const { id, updatedAt, ...rest } = req.result;
-          resolve(rest as IposMasterData);
+          const masterData = rest as IposMasterData;
+          if (healMasterDataUnits(masterData)) {
+            // Silently persist healed data back to IndexedDB
+            saveMasterData(masterData).catch((e) => console.warn('Could not auto-save healed master data:', e));
+          }
+          resolve(masterData);
         } else {
           resolve(null);
         }

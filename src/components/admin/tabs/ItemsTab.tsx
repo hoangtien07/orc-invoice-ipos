@@ -101,7 +101,19 @@ export const ItemsTab: React.FC<ItemsTabProps> = ({
                     <td className="p-3 font-mono font-semibold text-slate-800">{it.itemId}</td>
                     <td className="p-3 font-medium text-slate-800 max-w-xs">{it.itemName}</td>
                     <td className="p-3 text-slate-600 font-mono">{it.unitId || '-'}</td>
-                    <td className="p-3 text-slate-700">{it.unitName || '-'}</td>
+                    <td className="p-3 text-slate-700">
+                      <div className="flex items-center space-x-1.5">
+                        <span>{it.unitName || '-'}</span>
+                        {it.autoInferredUnit && (
+                          <span
+                            className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-medium"
+                            title={it.warning || 'ĐVT chính tự động suy luận từ tỷ lệ quy đổi 1000 GR'}
+                          >
+                            Tự suy luận (KG)
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="p-3 text-slate-600">
                       {it.category ? (
                         <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[11px]">

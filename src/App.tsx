@@ -186,6 +186,7 @@ export default function App() {
                 learnedUnitAliases={learnedUnitAliases}
                 onAliasesUpdated={refreshAliases}
                 onBackToScan={() => setCurrentStep('scan')}
+                onOpenAliasManager={() => setIsAliasModalOpen(true)}
               />
             )}
           </>

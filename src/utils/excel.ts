@@ -17,6 +17,7 @@ import {
   MatchedInvoiceRow,
 } from '../types';
 import {
+  isSameOrEquivalentUnit,
   normalizeText,
   normalizeWithoutAccents,
   parseVietnameseNumber,
@@ -93,11 +94,16 @@ export function findHeaderRowAndMap(
   const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1:Z100');
   let headerRowIndex = -1;
   let colMap: Record<string, number> = {};
+  let bestScore = -1;
+  let bestHeaderRowIndex = -1;
+  let bestColMap: Record<string, number> = {};
 
   // Scan up to top 30 rows for known headers
   for (let r = range.s.r; r <= Math.min(range.e.r, range.s.r + 30); r++) {
     const currentMap: Record<string, number> = {};
     let matchedKeywords = 0;
+    let unitIdIsChinh = false;
+    let unitNameIsChinh = false;
 
     for (let c = range.s.c; c <= range.e.c; c++) {
       const cellAddress = XLSX.utils.encode_cell({ r, c });
@@ -259,13 +265,23 @@ export function findHeaderRowAndMap(
         norm === 'ma don vi tinh quy doi' ||
         norm === 'ma dvt quy doi' ||
         norm === 'ma don vi quy doi' ||
+        norm === 'ma don vi tinh chuyen doi' ||
+        norm === 'ma dvt chuyen doi' ||
+        norm === 'ma don vi chuyen doi' ||
         norm === 'ma dvt phu' ||
         norm === 'ma don vi tinh phu' ||
         norm === 'ma dvt nhap' ||
         norm === 'ma don vi tinh nhap' ||
         norm === 'ma dvt nguon' ||
+        norm === 'ma dvt 2' ||
+        norm === 'ma dvt dinh luong' ||
+        norm === 'ma don vi tinh dinh luong' ||
+        norm === 'ma dvt cong thuc' ||
+        norm === 'ma dvt tieu hao' ||
         norm === 'dvt quy doi ma' ||
-        (norm.includes('quy doi') && (norm.includes('ma') || norm.includes('code'))) ||
+        norm === 'dvt chuyen doi ma' ||
+        ((norm.includes('quy doi') || norm.includes('chuyen doi') || norm.includes('bien doi') || norm.includes('dinh luong') || norm.includes('cong thuc') || norm.includes('tieu hao')) &&
+          (norm.includes('ma') || norm.includes('code') || norm.includes('id'))) ||
         norm.includes('conversion unit code')
       ) {
         currentMap['conv_unit_id'] = c;
@@ -275,15 +291,38 @@ export function findHeaderRowAndMap(
         norm === 'ten don vi tinh quy doi' ||
         norm === 'ten dvt quy doi' ||
         norm === 'ten don vi quy doi' ||
+        norm === 'ten don vi tinh chuyen doi' ||
+        norm === 'ten dvt chuyen doi' ||
+        norm === 'ten don vi chuyen doi' ||
         norm === 'dvt quy doi' ||
         norm === 'don vi tinh quy doi' ||
         norm === 'don vi quy doi' ||
+        norm === 'dvt chuyen doi' ||
+        norm === 'don vi tinh chuyen doi' ||
+        norm === 'don vi chuyen doi' ||
         norm === 'ten dvt phu' ||
         norm === 'dvt phu' ||
         norm === 'dvt nguon' ||
         norm === 'dvt nhap' ||
         norm === 'dvt mua' ||
-        (norm.includes('quy doi') && (norm.includes('ten') || norm.includes('name') || norm.includes('dvt') || norm.includes('don vi')) && !norm.includes('ty le') && !norm.includes('ti le') && !norm.includes('he so') && !norm.includes('rate')) ||
+        norm === 'dvt 2' ||
+        norm === 'ten dvt 2' ||
+        norm === 'ten dvt dinh luong' ||
+        norm === 'dvt dinh luong' ||
+        norm === 'don vi dinh luong' ||
+        norm === 'don vi tinh dinh luong' ||
+        norm === 'ten dvt cong thuc' ||
+        norm === 'dvt cong thuc' ||
+        norm === 'don vi cong thuc' ||
+        norm === 'ten dvt tieu hao' ||
+        norm === 'dvt tieu hao' ||
+        norm === 'don vi tieu hao' ||
+        ((norm.includes('quy doi') || norm.includes('chuyen doi') || norm.includes('bien doi') || norm.includes('dinh luong') || norm.includes('cong thuc') || norm.includes('tieu hao')) &&
+          (norm.includes('ten') || norm.includes('name') || norm.includes('dvt') || norm.includes('don vi')) &&
+          !norm.includes('ty le') &&
+          !norm.includes('ti le') &&
+          !norm.includes('he so') &&
+          !norm.includes('rate')) ||
         (norm.includes('dvt phu') && !norm.includes('ma'))
       ) {
         currentMap['conv_unit_name'] = c;
@@ -293,72 +332,123 @@ export function findHeaderRowAndMap(
         norm === 'ty le quy doi' ||
         norm === 'ti le quy doi' ||
         norm === 'he so quy doi' ||
+        norm === 'ty le chuyen doi' ||
+        norm === 'ti le chuyen doi' ||
+        norm === 'he so chuyen doi' ||
+        norm === 'ty le dinh luong' ||
+        norm === 'ti le dinh luong' ||
+        norm === 'he so dinh luong' ||
         norm === 'ty le qd' ||
         norm === 'ti le qd' ||
         norm === 'he so qd' ||
+        norm === 'ty le cd' ||
+        norm === 'ti le cd' ||
+        norm === 'he so cd' ||
         norm === 'ty le' ||
         norm === 'ti le' ||
         norm === 'he so' ||
         norm.includes('conversion rate') ||
-        (norm.includes('quy doi') && (norm.includes('ty le') || norm.includes('ti le') || norm.includes('he so') || norm.includes('rate')))
+        ((norm.includes('quy doi') || norm.includes('chuyen doi') || norm.includes('bien doi') || norm.includes('dinh luong')) &&
+          (norm.includes('ty le') || norm.includes('ti le') || norm.includes('he so') || norm.includes('rate')))
       ) {
         currentMap['conv_rate'] = c;
         currentMap['rate'] = c;
         matchedKeywords++;
       } else if (
-        norm === 'ma dvt chinh' ||
-        norm === 'ma don vi tinh chinh' ||
-        norm === 'ma don vi chinh' ||
-        norm === 'ma dvt' ||
-        norm === 'ma don vi tinh' ||
-        norm === 'ma don vi' ||
-        norm === 'dvt ma' ||
-        norm === 'ma dvt goc' ||
-        norm === 'ma dvt co ban' ||
-        norm === 'ma dvt chuan' ||
-        norm === 'unit id' ||
-        norm === 'unit code' ||
-        norm === 'uom code' ||
-        norm.includes('unit code') ||
-        norm.includes('uom code') ||
-        (norm.includes('dvt chinh') && (norm.includes('ma') || norm.includes('code'))) ||
-        (norm.includes('don vi tinh chinh') && (norm.includes('ma') || norm.includes('code'))) ||
-        ((norm.startsWith('ma dvt') || norm.startsWith('ma don vi')) && !norm.includes('quy doi') && !norm.includes('phu') && !norm.includes('nhap') && !norm.includes('nguon') && !norm.includes('ncc') && !norm.includes('kho') && !norm.includes('khach')) ||
-        (domainHint === 'unit' && (norm === 'ma' || norm === 'ma so' || norm === 'ma dvt'))
+        !norm.includes('quy doi') &&
+        !norm.includes('chuyen doi') &&
+        !norm.includes('bien doi') &&
+        !norm.includes('dinh luong') &&
+        !norm.includes('cong thuc') &&
+        !norm.includes('tieu hao') &&
+        !norm.includes('phu') &&
+        !norm.includes('nhap') &&
+        !norm.includes('nguon') &&
+        !norm.includes('ncc') &&
+        !norm.includes('kho') &&
+        !norm.includes('khach') &&
+        !norm.includes('dvt 2') &&
+        !norm.includes('ma dvt 2') &&
+        (norm === 'ma dvt chinh' ||
+          norm === 'ma don vi tinh chinh' ||
+          norm === 'ma don vi chinh' ||
+          norm === 'ma dvt' ||
+          norm === 'ma don vi tinh' ||
+          norm === 'ma don vi' ||
+          norm === 'dvt ma' ||
+          norm === 'ma dvt goc' ||
+          norm === 'ma dvt co ban' ||
+          norm === 'ma dvt chuan' ||
+          norm === 'unit id' ||
+          norm === 'unit code' ||
+          norm === 'uom code' ||
+          norm.includes('unit code') ||
+          norm.includes('uom code') ||
+          (norm.includes('dvt chinh') && (norm.includes('ma') || norm.includes('code') || norm.includes('id'))) ||
+          (norm.includes('don vi tinh chinh') && (norm.includes('ma') || norm.includes('code') || norm.includes('id'))) ||
+          ((norm.startsWith('ma dvt') || norm.startsWith('ma don vi')) &&
+            !norm.includes('quy doi') &&
+            !norm.includes('chuyen doi') &&
+            !norm.includes('dinh luong')) ||
+          (domainHint === 'unit' && (norm === 'ma' || norm === 'ma so' || norm === 'ma dvt')))
       ) {
-        currentMap['unit_id'] = c;
-        matchedKeywords++;
+        const isChinh = norm.includes('chinh');
+        if (currentMap['unit_id'] === undefined || (isChinh && !unitIdIsChinh)) {
+          currentMap['unit_id'] = c;
+          if (isChinh) unitIdIsChinh = true;
+          matchedKeywords++;
+        }
       } else if (
-        norm === 'ten dvt chinh' ||
-        norm === 'ten don vi tinh chinh' ||
-        norm === 'ten don vi chinh' ||
-        norm === 'dvt chinh' ||
-        norm === 'don vi tinh chinh' ||
-        norm === 'don vi chinh' ||
-        norm === 'ten dvt' ||
-        norm === 'ten don vi tinh' ||
-        norm === 'ten don vi' ||
-        norm === 'dvt' ||
-        norm === 'don vi tinh' ||
-        norm === 'don vi' ||
-        norm === 'dvt goc' ||
-        norm === 'ten dvt goc' ||
-        norm === 'dvt co ban' ||
-        norm === 'ten dvt co ban' ||
-        norm === 'dvt dich' ||
-        norm === 'dvt ton' ||
-        norm === 'dvt co so' ||
-        norm === 'dvt chuan' ||
-        norm === 'unit' ||
-        norm === 'uom' ||
-        norm.includes('unit name') ||
-        norm.includes('dvt chinh') ||
-        norm.includes('don vi tinh chinh') ||
-        ((norm.startsWith('ten dvt') || norm.startsWith('ten don vi')) && !norm.includes('quy doi') && !norm.includes('phu') && !norm.includes('nhap') && !norm.includes('nguon') && !norm.includes('ncc') && !norm.includes('kho') && !norm.includes('khach')) ||
-        (domainHint === 'unit' && (norm === 'ten' || norm === 'ten dvt' || norm === 'ten don vi'))
+        !norm.includes('quy doi') &&
+        !norm.includes('chuyen doi') &&
+        !norm.includes('bien doi') &&
+        !norm.includes('dinh luong') &&
+        !norm.includes('cong thuc') &&
+        !norm.includes('tieu hao') &&
+        !norm.includes('phu') &&
+        !norm.includes('nhap') &&
+        !norm.includes('nguon') &&
+        !norm.includes('ncc') &&
+        !norm.includes('kho') &&
+        !norm.includes('khach') &&
+        !norm.includes('dvt 2') &&
+        (norm === 'ten dvt chinh' ||
+          norm === 'ten don vi tinh chinh' ||
+          norm === 'ten don vi chinh' ||
+          norm === 'dvt chinh' ||
+          norm === 'don vi tinh chinh' ||
+          norm === 'don vi chinh' ||
+          norm === 'ten dvt' ||
+          norm === 'ten don vi tinh' ||
+          norm === 'ten don vi' ||
+          norm === 'dvt' ||
+          norm === 'don vi tinh' ||
+          norm === 'don vi' ||
+          norm === 'dvt goc' ||
+          norm === 'ten dvt goc' ||
+          norm === 'dvt co ban' ||
+          norm === 'ten dvt co ban' ||
+          norm === 'dvt dich' ||
+          norm === 'dvt ton' ||
+          norm === 'dvt co so' ||
+          norm === 'dvt chuan' ||
+          norm === 'unit' ||
+          norm === 'uom' ||
+          norm.includes('unit name') ||
+          norm.includes('dvt chinh') ||
+          norm.includes('don vi tinh chinh') ||
+          ((norm.startsWith('ten dvt') || norm.startsWith('ten don vi')) &&
+            !norm.includes('quy doi') &&
+            !norm.includes('chuyen doi') &&
+            !norm.includes('dinh luong')) ||
+          (domainHint === 'unit' && (norm === 'ten' || norm === 'ten dvt' || norm === 'ten don vi')))
       ) {
-        currentMap['unit_name'] = c;
-        matchedKeywords++;
+        const isChinh = norm.includes('chinh');
+        if (currentMap['unit_name'] === undefined || (isChinh && !unitNameIsChinh)) {
+          currentMap['unit_name'] = c;
+          if (isChinh) unitNameIsChinh = true;
+          matchedKeywords++;
+        }
       }
 
       // 7. Reasons
@@ -502,11 +592,26 @@ export function findHeaderRowAndMap(
         currentMap['price'] = c;
         matchedKeywords++;
       } else if (
-        norm === 'thanh tien' ||
         norm === 'tong tien' ||
+        norm === 'tong thanh toan' ||
+        norm === 'tong cong' ||
+        norm === 'tong gia tri' ||
+        norm === 'tong tien thanh toan' ||
+        norm.includes('total amount') ||
+        norm.includes('tong thanh toan') ||
+        (norm.includes('tong tien') && !norm.includes('thue'))
+      ) {
+        currentMap['total_amount'] = c;
+        currentMap['total'] = c;
+        matchedKeywords++;
+      } else if (
+        norm === 'thanh tien' ||
+        norm === 'tien hang' ||
+        norm === 'thanh tien chua thue' ||
         norm.includes('subtotal') ||
         norm.includes('amount') ||
-        norm.includes('thanh tien')
+        norm.includes('thanh tien') ||
+        norm.includes('tien hang')
       ) {
         currentMap['sub_total'] = c;
         matchedKeywords++;
@@ -528,11 +633,42 @@ export function findHeaderRowAndMap(
       }
     }
 
-    if (matchedKeywords >= 2 || (domainHint && matchedKeywords >= 1)) {
-      headerRowIndex = r;
-      colMap = currentMap;
-      break;
+    // Calculate specificity score for row r
+    let rowScore = 0;
+    if (currentMap['item_id'] !== undefined) rowScore += 10;
+    if (currentMap['item_name'] !== undefined) rowScore += 10;
+    if (currentMap['unit_id'] !== undefined) rowScore += 6;
+    if (currentMap['unit_name'] !== undefined) rowScore += 6;
+    if (currentMap['conv_unit_id'] !== undefined) rowScore += 4;
+    if (currentMap['conv_rate'] !== undefined) rowScore += 4;
+    if (currentMap['price'] !== undefined || currentMap['cost_price'] !== undefined) rowScore += 4;
+    if (currentMap['category_id'] !== undefined || currentMap['category_name'] !== undefined) rowScore += 3;
+    if (currentMap['supplier_id'] !== undefined || currentMap['supplier_name'] !== undefined) rowScore += 10;
+    if (currentMap['customer_id'] !== undefined || currentMap['customer_name'] !== undefined) rowScore += 10;
+    if (currentMap['quantity'] !== undefined) rowScore += 4;
+    rowScore += matchedKeywords;
+
+    if (currentMap['item_id'] !== undefined && currentMap['item_name'] !== undefined) {
+      rowScore += 15;
     }
+    if (currentMap['supplier_id'] !== undefined && currentMap['supplier_name'] !== undefined) {
+      rowScore += 15;
+    }
+
+    if (rowScore > bestScore) {
+      bestScore = rowScore;
+      bestHeaderRowIndex = r;
+      bestColMap = currentMap;
+      // High confidence match found
+      if (rowScore >= 35) {
+        break;
+      }
+    }
+  }
+
+  if (bestScore >= 2 || (domainHint && bestScore >= 1)) {
+    headerRowIndex = bestHeaderRowIndex;
+    colMap = bestColMap;
   }
 
   // General Unit fallback
@@ -701,8 +837,46 @@ function extractItemsWithExplicitMap(
     const rawUnitName = unitNameCell && unitNameCell.v !== undefined ? String(unitNameCell.v).trim() : '';
     const fallbackUnit = generalUnitCell && generalUnitCell.v !== undefined ? String(generalUnitCell.v).trim() : '';
 
+    // Collect Conversion info from row (Columns L/M or O/P)
+    const rawConvUnit =
+      convUnitNameCell && convUnitNameCell.v !== undefined
+        ? String(convUnitNameCell.v).trim()
+        : convUnitIdCell && convUnitIdCell.v !== undefined
+        ? String(convUnitIdCell.v).trim()
+        : '';
+    const rawConvRate = convRateCell ? parseVietnameseNumber(convRateCell.v) : 0;
+
     let finalUnitId = rawUnitId || (rawUnitName ? resolveStandardUnitCode(rawUnitName) : fallbackUnit ? resolveStandardUnitCode(fallbackUnit) : undefined);
     let finalUnitName = rawUnitName || (rawUnitId ? resolveStandardUnitName(rawUnitId) : fallbackUnit ? resolveStandardUnitName(fallbackUnit) : undefined);
+    let autoInferredUnit = false;
+    let itemWarning: string | undefined = undefined;
+
+    // Self-healing fallback for missing primary unit (e.g. CP22 in iPOS export)
+    // When primary unit is blank, never overwrite with conversion unit (like GR).
+    // Instead, intelligently infer primary purchasing unit from conversion rate and item context:
+    if (!finalUnitId && !finalUnitName) {
+      const normConv = rawConvUnit ? normalizeWithoutAccents(rawConvUnit).toUpperCase() : '';
+      if ((normConv === 'GR' || normConv === 'G' || normConv === 'GRAM') && rawConvRate === 1000) {
+        finalUnitId = 'KG';
+        finalUnitName = 'Kg';
+        autoInferredUnit = true;
+        itemWarning = `Mã ${rawItemId} thiếu ĐVT chính trong file Excel gốc, hệ thống đã tự động gán KG theo tỷ lệ 1000 GR`;
+      } else if (normConv === 'ML' && rawConvRate === 1000) {
+        finalUnitId = 'LIT';
+        finalUnitName = 'Lít';
+        autoInferredUnit = true;
+        itemWarning = `Mã ${rawItemId} thiếu ĐVT chính trong file Excel gốc, hệ thống đã tự động gán LIT theo tỷ lệ 1000 ML`;
+      } else if (rawConvUnit && rawConvRate && rawConvRate > 1) {
+        finalUnitId = 'THUNG';
+        finalUnitName = 'Thùng';
+        autoInferredUnit = true;
+        itemWarning = `Mã ${rawItemId} thiếu ĐVT chính trong file Excel gốc, hệ thống đã tự động gán Thùng theo tỷ lệ ${rawConvRate} ${rawConvUnit}`;
+      } else if (rawConvUnit) {
+        finalUnitId = resolveStandardUnitCode(rawConvUnit) || rawConvUnit.toUpperCase();
+        finalUnitName = resolveStandardUnitName(rawConvUnit) || rawConvUnit;
+      }
+    }
+
     if (!finalUnitName && finalUnitId) {
       finalUnitName = resolveStandardUnitName(finalUnitId) || finalUnitId;
     }
@@ -752,21 +926,17 @@ function extractItemsWithExplicitMap(
       }
     }
 
-    // Collect Conversion if present in items row (e.g. Columns O & P)
-    const rawConvUnit =
-      convUnitNameCell && convUnitNameCell.v !== undefined
-        ? String(convUnitNameCell.v).trim()
-        : convUnitIdCell && convUnitIdCell.v !== undefined
-        ? String(convUnitIdCell.v).trim()
-        : '';
-    const rawConvRate = convRateCell ? parseVietnameseNumber(convRateCell.v) : 0;
+    // Collect Conversion: Primary unit (KG) is sourceUnitName, Conversion unit (GR) is targetUnitName
+    // 1 sourceUnitName (KG) = rawConvRate targetUnitName (GR)
     if (rawConvUnit && rawConvRate && rawConvRate > 0) {
+      const primaryUnit = finalUnitName || finalUnitId || 'Kg';
       conversions.push({
         itemId: rawItemId || undefined,
         itemName: rawItemName || undefined,
-        sourceUnitName: rawConvUnit,
-        targetUnitName: finalUnitName || finalUnitId || 'Cái',
+        sourceUnitName: primaryUnit,
+        targetUnitName: rawConvUnit,
         conversionRate: rawConvRate,
+        description: `1 ${primaryUnit} = ${rawConvRate} ${rawConvUnit}${autoInferredUnit ? ' (Tự động suy luận)' : ''}`,
       });
     }
 
@@ -788,6 +958,22 @@ function extractItemsWithExplicitMap(
 
     const description = noteCell && noteCell.v !== undefined ? String(noteCell.v).trim() : undefined;
 
+    // Item Type (0 - NVL, 1 - TP)
+    let itemType: number | string | undefined = undefined;
+    if (rawTypeId) {
+      if (rawTypeId === '0' || rawTypeId.toLowerCase().includes('nvl') || rawTypeId.toLowerCase().includes('nguyen vat lieu')) {
+        itemType = 0;
+      } else if (rawTypeId === '1' || rawTypeId.toLowerCase().includes('thanh pham')) {
+        itemType = 1;
+      } else {
+        itemType = rawTypeId;
+      }
+    } else if (rawItemId.toUpperCase().startsWith('CP') || rawItemId.toUpperCase().startsWith('NVL')) {
+      itemType = 0;
+    } else if (rawItemId.toUpperCase().startsWith('ITEM') || rawItemId.toUpperCase().startsWith('TP')) {
+      itemType = 1;
+    }
+
     items.push({
       itemId: rawItemId || `ITEM_${items.length + 1}`,
       itemName: rawItemName || rawItemId,
@@ -795,11 +981,14 @@ function extractItemsWithExplicitMap(
       unitName: finalUnitName || undefined,
       category: category || undefined,
       categoryId: categoryId || undefined,
+      itemType,
       costPrice,
       barcode,
       status,
-      description,
+      description: itemWarning || description,
       sourceSheet: sheetName,
+      warning: itemWarning,
+      autoInferredUnit,
     });
   }
 
@@ -866,6 +1055,11 @@ export function extractUnitsFromSheet(sheet: XLSX.WorkSheet): IposUnit[] {
   const { colMap, dataStartRow } = findHeaderRowAndMap(sheet, 'unit');
   const json = XLSX.utils.sheet_to_json<any>(sheet, { header: 1 });
 
+  const isNumericValue = (val?: string | null) => {
+    if (!val) return true;
+    return /^[\d.,\s\+\-\*\/%]+$/.test(val.trim());
+  };
+
   for (let r = dataStartRow; r < json.length; r++) {
     const row = json[r];
     if (!Array.isArray(row) || row.length === 0) continue;
@@ -892,10 +1086,17 @@ export function extractUnitsFromSheet(sheet: XLSX.WorkSheet): IposUnit[] {
 
     if (name || id) {
       const clean = cleanHeaderText(name || id);
-      if (clean.includes('ma don vi') || clean.includes('ten don vi') || clean.includes('tong cong')) continue;
+      if (clean.includes('ma don vi') || clean.includes('ten don vi') || clean.includes('tong cong') || clean.includes('ti le')) continue;
+
+      // Filter out purely numeric units or conversion ratios
+      if (isNumericValue(id) && isNumericValue(name)) continue;
+      if (!id && isNumericValue(name)) continue;
+      if (!name && isNumericValue(id)) continue;
 
       const finalId = id || resolveStandardUnitCode(name) || name.toUpperCase();
       const finalName = name || resolveStandardUnitName(id) || id;
+
+      if (isNumericValue(finalId) || isNumericValue(finalName)) continue;
 
       units.push({
         unitId: finalId,
@@ -913,6 +1114,11 @@ export function extractConversionsFromSheet(sheet: XLSX.WorkSheet, isDedicatedFi
   const conversions: IposUnitConversion[] = [];
   const { colMap, dataStartRow } = findHeaderRowAndMap(sheet, 'conversion');
   const json = XLSX.utils.sheet_to_json<any>(sheet, { header: 1 });
+
+  const isNumericValue = (val?: string | null) => {
+    if (!val) return true;
+    return /^[\d.,\s\+\-\*\/%]+$/.test(val.trim());
+  };
 
   for (let r = dataStartRow; r < json.length; r++) {
     const row = json[r];
@@ -967,7 +1173,9 @@ export function extractConversionsFromSheet(sheet: XLSX.WorkSheet, isDedicatedFi
         cleanSrc.includes('dvt phu') ||
         cleanTgt.includes('dvt goc') ||
         cleanTgt.includes('dvt chinh') ||
-        cleanSrc.includes('tong cong')
+        cleanSrc.includes('tong cong') ||
+        isNumericValue(srcUnit) ||
+        isNumericValue(tgtUnit)
       ) {
         continue;
       }
@@ -1925,7 +2133,8 @@ export async function parseMultipleIposExcelFiles(
       normFileName.includes('nhap mau') ||
       normFileName.includes('nhap mua') ||
       normFileName.includes('mau nhap') ||
-      normFileName.includes('template')
+      normFileName.includes('template') ||
+      normFileName.includes('mau_excel_ipos')
     ) {
       masterData.templateWorkbookBase64 = arrayBufferToBase64(arrayBuffer);
       masterData.templateFileName = fileName;
@@ -1936,49 +2145,92 @@ export async function parseMultipleIposExcelFiles(
       const normSheet = normalizeWithoutAccents(sheetName).toLowerCase();
       if (normSheet.includes('huong dan') || normSheet.includes('readme')) continue;
 
-      // 1. Try item extraction first as items often contain categories, units & conversions
-      const bundle = extractItemsDetailedFromSheet(sheet, `${fileName} -> ${sheetName}`);
-      if (bundle.items.length > 0) {
-        parsedItems.push(...bundle.items);
-        parsedCategories.push(...bundle.categories);
-        parsedUnits.push(...bundle.units);
-        parsedConversions.push(...bundle.conversions);
-        continue;
-      }
-
-      // 2. If not an items sheet, classify by file & sheet content/name
-      if (normFileName.includes('nhom hang') || normSheet.includes('nhom hang') || normSheet.includes('loai hang') || normSheet.includes('category')) {
-        const cats = extractCategoriesFromSheet(sheet);
-        if (cats.length > 0) parsedCategories.push(...cats);
-      } else if (normFileName.includes('don vi tinh') || normSheet.includes('don vi tinh') || normFileName.includes('dvt') || normSheet.includes('dvt') || normSheet.includes('unit')) {
+      // 1. Check specific domain files and sheets FIRST by filename & sheet title
+      if (
+        normFileName.includes('don vi tinh') ||
+        normFileName.includes('dvt') ||
+        normSheet.includes('don vi tinh') ||
+        normSheet.includes('dvt') ||
+        normFileName.includes('mau_nhap_don_vi_tinh')
+      ) {
         const u = extractUnitsFromSheet(sheet);
         if (u.length > 0) parsedUnits.push(...u);
-      } else if (normFileName.includes('quy doi') || normSheet.includes('quy doi') || normSheet.includes('conversion')) {
+      } else if (
+        normFileName.includes('quy doi') ||
+        normSheet.includes('quy doi') ||
+        normFileName.includes('conversion') ||
+        normSheet.includes('conversion') ||
+        normFileName.includes('bang_quy_doi')
+      ) {
         const c = extractConversionsFromSheet(sheet, true);
         if (c.length > 0) parsedConversions.push(...c);
-      } else if (normFileName.includes('cong thuc') || normSheet.includes('cong thuc') || normFileName.includes('bom') || normSheet.includes('recipe')) {
-        const r = extractRecipesFromSheet(sheet);
-        if (r.length > 0) parsedRecipes.push(...r);
-      } else if (normFileName.includes('kho') || normSheet.includes('kho') || normSheet.includes('warehouse')) {
+      } else if (
+        normFileName.includes('kho') ||
+        normSheet.includes('kho') ||
+        normFileName.includes('warehouse') ||
+        normSheet.includes('warehouse')
+      ) {
         const w = extractWarehousesFromSheet(sheet, true);
         if (w.length > 0) parsedWarehouses.push(...w);
-      } else if (normFileName.includes('khach hang') || normSheet.includes('khach hang') || normSheet.includes('customer')) {
-        const cust = extractCustomersFromSheet(sheet);
-        if (cust.length > 0) parsedCustomers.push(...cust);
-      } else if (normFileName.includes('nha cung cap') || normFileName.includes('ncc') || normSheet.includes('nha cung cap') || normSheet.includes('ncc') || normSheet.includes('supplier')) {
+      } else if (
+        normFileName.includes('nha cung cap') ||
+        normFileName.includes('ncc') ||
+        normSheet.includes('nha cung cap') ||
+        normSheet.includes('ncc') ||
+        normFileName.includes('supplier') ||
+        normSheet.includes('supplier')
+      ) {
         const s = extractSuppliersFromSheet(sheet, true);
         if (s.length > 0) parsedSuppliers.push(...s);
-      } else if (normFileName.includes('ly do') || normSheet.includes('ly do') || normSheet.includes('reason')) {
+      } else if (
+        normFileName.includes('nhom hang') ||
+        normSheet.includes('nhom hang') ||
+        normFileName.includes('loai hang') ||
+        normSheet.includes('loai hang') ||
+        normFileName.includes('category')
+      ) {
+        const cats = extractCategoriesFromSheet(sheet);
+        if (cats.length > 0) parsedCategories.push(...cats);
+      } else if (
+        normFileName.includes('cong thuc') ||
+        normSheet.includes('cong thuc') ||
+        normFileName.includes('bom') ||
+        normSheet.includes('bom') ||
+        normFileName.includes('recipe')
+      ) {
+        const r = extractRecipesFromSheet(sheet);
+        if (r.length > 0) parsedRecipes.push(...r);
+      } else if (
+        normFileName.includes('khach hang') ||
+        normSheet.includes('khach hang') ||
+        normFileName.includes('customer')
+      ) {
+        const cust = extractCustomersFromSheet(sheet);
+        if (cust.length > 0) parsedCustomers.push(...cust);
+      } else if (
+        normFileName.includes('ly do') ||
+        normSheet.includes('ly do') ||
+        normFileName.includes('reason')
+      ) {
         const r = extractReasonsFromSheet(sheet);
         if (r.length > 0) parsedReasons.push(...r);
       } else {
-        // Fallback checks
-        const cats = extractCategoriesFromSheet(sheet);
-        if (cats.length > 0) parsedCategories.push(...cats);
-        const supps = extractSuppliersFromSheet(sheet);
-        if (supps.length > 0) parsedSuppliers.push(...supps);
-        const whs = extractWarehousesFromSheet(sheet);
-        if (whs.length > 0) parsedWarehouses.push(...whs);
+        // 2. Otherwise extract items catalog
+        const bundle = extractItemsDetailedFromSheet(sheet, `${fileName} -> ${sheetName}`);
+        if (bundle.items.length > 0) {
+          parsedItems.push(...bundle.items);
+          parsedCategories.push(...bundle.categories);
+          // Only add units from items if not purely numeric
+          const cleanItemUnits = bundle.units.filter(
+            (u) =>
+              u.unitId &&
+              u.unitName &&
+              !/^[\d.,\s\+\-\*\/%]+$/.test(u.unitId) &&
+              !/^[\d.,\s\+\-\*\/%]+$/.test(u.unitName)
+          );
+          parsedUnits.push(...cleanItemUnits);
+          parsedConversions.push(...bundle.conversions);
+        }
       }
     }
   }
@@ -1999,17 +2251,40 @@ export async function parseMultipleIposExcelFiles(
     masterData.categories = Array.from(catMap.values());
   }
 
-  // Merge units
+  // Merge units cleanly: ensure no pure numeric units
   if (parsedUnits.length > 0) {
     const unitMap = new Map<string, IposUnit>();
-    if (mode === 'merge' && masterData.units) masterData.units.forEach((u) => unitMap.set(u.unitId.toLowerCase(), u));
-    parsedUnits.forEach((u) => unitMap.set(u.unitId.toLowerCase(), { ...(unitMap.get(u.unitId.toLowerCase()) || {}), ...u }));
+    if (mode === 'merge' && masterData.units) {
+      masterData.units.forEach((u) => {
+        if (u.unitId && !/^[\d.,\s\+\-\*\/%]+$/.test(u.unitId)) {
+          unitMap.set(u.unitId.toLowerCase(), u);
+        }
+      });
+    }
+    parsedUnits.forEach((u) => {
+      if (
+        u.unitId &&
+        u.unitName &&
+        !/^[\d.,\s\+\-\*\/%]+$/.test(u.unitId) &&
+        !/^[\d.,\s\+\-\*\/%]+$/.test(u.unitName)
+      ) {
+        const key = u.unitId.toLowerCase();
+        unitMap.set(key, { ...(unitMap.get(key) || {}), ...u });
+      }
+    });
     masterData.units = Array.from(unitMap.values());
   }
 
-  // Merge conversions
+  // Merge conversions: ensure clean non-numeric units
   if (parsedConversions.length > 0) {
-    masterData.unitConversions = mode === 'merge' ? [...(masterData.unitConversions || []), ...parsedConversions] : parsedConversions;
+    const cleanConvs = parsedConversions.filter(
+      (c) =>
+        c.sourceUnitName &&
+        c.targetUnitName &&
+        !/^[\d.,\s\+\-\*\/%]+$/.test(c.sourceUnitName) &&
+        !/^[\d.,\s\+\-\*\/%]+$/.test(c.targetUnitName)
+    );
+    masterData.unitConversions = mode === 'merge' ? [...(masterData.unitConversions || []), ...cleanConvs] : cleanConvs;
   }
 
   // Merge recipes
@@ -2098,6 +2373,266 @@ export function validateForExport(rows: MatchedInvoiceRow[]): ExportValidationRe
 }
 
 // -------------------------------------------------------------
+// RESOLVE UNIT CODE FOR IPOS IMPORT (PREVENTS INCOMPATIBLE UOM ERRORS)
+// -------------------------------------------------------------
+
+export function resolveIposExportUnitCode(
+  row: MatchedInvoiceRow,
+  masterData?: IposMasterData | null
+): string {
+  // 1. Locate current matched item in Master Data items
+  const itemId = row.item_id || row.selectedCandidate?.itemId;
+  const currentItem =
+    masterData?.items?.find((i) => i.itemId === itemId) ||
+    row.selectedCandidate;
+
+  const rawUnit = (row.unit || row.raw?.raw_unit || '').trim();
+  const rawUnitCode = resolveStandardUnitCode(rawUnit);
+  const rawUnitNorm = normalizeWithoutAccents(rawUnit).toLowerCase();
+
+  if (currentItem) {
+    // Official primary Unit ID in DB (e.g. CP35 -> "BAP", CP08 -> "KG", CP169 -> "CAI", CP271 -> "QUA")
+    const primaryUnitId = (
+      currentItem.unitId ||
+      resolveStandardUnitCode(currentItem.unitName) ||
+      'KG'
+    ).trim().toUpperCase();
+
+    const primaryUnitName = (currentItem.unitName || '').trim();
+    const primaryUnitNameNorm = normalizeWithoutAccents(primaryUnitName).toLowerCase();
+    const primaryUnitIdNorm = normalizeWithoutAccents(primaryUnitId).toLowerCase();
+
+    // RULE 1: If unit on receipt/image is missing or empty -> MANDATORY fallback to primary unitId in DB
+    if (!rawUnit || rawUnitNorm.length === 0) {
+      return primaryUnitId;
+    }
+
+    // Direct match between receipt unit and DB primary unit (e.g. "Bắp" -> "BAP", "kg" -> "KG", "Cái" -> "CAI")
+    if (
+      isSameOrEquivalentUnit(rawUnit, primaryUnitId) ||
+      isSameOrEquivalentUnit(rawUnit, primaryUnitName) ||
+      rawUnitNorm === primaryUnitNameNorm ||
+      rawUnitNorm === primaryUnitIdNorm ||
+      rawUnitCode === primaryUnitId
+    ) {
+      return primaryUnitId;
+    }
+
+    // RULE 2: CHECK UNIT CONVERSIONS TABLE
+    // If unit on receipt differs from primary unit in DB (e.g. DB is "BAP" but receipt is "kg"):
+    // Step 1: Look up in Unit Conversions table (masterData.unitConversions)
+    let isSrcConversion = false;
+    const validConversion = masterData?.unitConversions?.find((c) => {
+      const itemMatch = !c.itemId || c.itemId === currentItem.itemId;
+      if (!itemMatch) return false;
+
+      const isSrc =
+        isSameOrEquivalentUnit(c.sourceUnitName, rawUnit) ||
+        normalizeWithoutAccents(c.sourceUnitName).toLowerCase() === rawUnitNorm;
+      const isTgt =
+        isSameOrEquivalentUnit(c.targetUnitName, rawUnit) ||
+        normalizeWithoutAccents(c.targetUnitName).toLowerCase() === rawUnitNorm;
+
+      if (!isSrc && !isTgt) return false;
+
+      // Check if conversion connects rawUnit to primary unit
+      if (isSrc) {
+        const connects =
+          isSameOrEquivalentUnit(c.targetUnitName, primaryUnitId) ||
+          isSameOrEquivalentUnit(c.targetUnitName, primaryUnitName) ||
+          !c.itemId;
+        if (connects) {
+          isSrcConversion = true;
+          return true;
+        }
+      }
+      if (isTgt) {
+        const connects =
+          isSameOrEquivalentUnit(c.sourceUnitName, primaryUnitId) ||
+          isSameOrEquivalentUnit(c.sourceUnitName, primaryUnitName) ||
+          !c.itemId;
+        if (connects) {
+          isSrcConversion = false;
+          return true;
+        }
+      }
+      return false;
+    });
+
+    // Step 3: IF there is a valid conversion in DB -> use the valid converted unit code (UPPERCASE)
+    if (validConversion) {
+      const convUnitName = isSrcConversion ? validConversion.sourceUnitName : validConversion.targetUnitName;
+      const matchedDbUnit = masterData?.units?.find(
+        (u) =>
+          isSameOrEquivalentUnit(u.unitId, rawUnit) ||
+          isSameOrEquivalentUnit(u.unitName, rawUnit) ||
+          isSameOrEquivalentUnit(u.unitName, convUnitName) ||
+          isSameOrEquivalentUnit(u.unitId, convUnitName)
+      );
+      return (matchedDbUnit?.unitId || rawUnitCode || resolveStandardUnitCode(convUnitName)).trim().toUpperCase();
+    }
+
+    // Step 2: IF NO valid conversion exists between receipt unit and primary unit in DB ->
+    // MANDATORY fallback to primary unitId in DB (to prevent iPOS error "Không có quy đổi đơn vị tính...")
+    return primaryUnitId;
+  }
+
+  // If item not found in DB at all, return standard uppercase unit code
+  return rawUnitCode || 'KG';
+}
+
+// -------------------------------------------------------------
+// CENTRALIZED XLSX FILE WRITER WITH SHARED STRING TABLE (SST)
+// -------------------------------------------------------------
+
+/**
+ * Writes an XLSX workbook with Shared String Table (SST) and compression enabled.
+ * Strictly required for compatibility with the iPOS import parser.
+ */
+export function writeXlsxFile(workbook: XLSX.WorkBook, fileName: string): void {
+  XLSX.writeFile(workbook, fileName, {
+    bookType: 'xlsx',
+    bookSST: true,
+    compression: true,
+  });
+}
+
+// -------------------------------------------------------------
+// DEFAULT BUNDLED IPOS PURCHASE IMPORT TEMPLATE
+// -------------------------------------------------------------
+
+export const IPOS_DEFAULT_SHEET_NAME = 'Dữ liệu dùng để import';
+
+export const IPOS_11_COLUMN_HEADERS_VN = [
+  'Mã hàng hóa (*)',
+  'Tên hàng hoá',
+  'Mã đơn vị tính (*)',
+  'Số lượng (*)',
+  'Đơn giá',
+  'Giảm giá (%)',
+  'Tiền giảm giá',
+  'Vat',
+  'Tiền vat',
+  'Ghi chú',
+  'Tổng',
+];
+
+export const IPOS_11_COLUMN_KEYS = [
+  'item_id',
+  'item_name',
+  'unit_id',
+  'quantity',
+  'price',
+  'discount',
+  'discount_amount',
+  'vat',
+  'amount_vat',
+  'note',
+  'sub_total',
+];
+
+/**
+ * Builds a pristine, canonical iPOS purchase import workbook with the exact 2-row header structure.
+ */
+export function createDefaultIposImportTemplateWorkbook(): XLSX.WorkBook {
+  const wb = XLSX.utils.book_new();
+  const ws: XLSX.WorkSheet = {
+    '!ref': 'A1:K2',
+    '!cols': [
+      { wch: 18 }, // Mã hàng hóa (*) [item_id]
+      { wch: 36 }, // Tên hàng hoá [item_name]
+      { wch: 20 }, // Mã đơn vị tính (*) [unit_id]
+      { wch: 14 }, // Số lượng (*) [quantity]
+      { wch: 16 }, // Đơn giá [price]
+      { wch: 14 }, // Giảm giá (%) [discount]
+      { wch: 16 }, // Tiền giảm giá [discount_amount]
+      { wch: 12 }, // Vat [vat]
+      { wch: 16 }, // Tiền vat [amount_vat]
+      { wch: 24 }, // Ghi chú [note]
+      { wch: 18 }, // Tổng [sub_total]
+    ],
+  };
+
+  for (let c = 0; c < IPOS_11_COLUMN_HEADERS_VN.length; c++) {
+    ws[XLSX.utils.encode_cell({ r: 0, c })] = { t: 's', v: IPOS_11_COLUMN_HEADERS_VN[c] };
+    ws[XLSX.utils.encode_cell({ r: 1, c })] = { t: 's', v: IPOS_11_COLUMN_KEYS[c] };
+  }
+
+  XLSX.utils.book_append_sheet(wb, ws, IPOS_DEFAULT_SHEET_NAME);
+  return wb;
+}
+
+/**
+ * Returns a template ArrayBuffer for template-based reading via XLSX.read.
+ */
+export function getDefaultIposImportTemplateArrayBuffer(): ArrayBuffer {
+  const wb = createDefaultIposImportTemplateWorkbook();
+  const u8arr = XLSX.write(wb, { bookType: 'xlsx', bookSST: true, type: 'array' });
+  return u8arr.buffer;
+}
+
+/**
+ * Triggers download of the default iPOS purchase import template.
+ */
+export function downloadDefaultIposTemplate(fileName = 'MAU_NHAP_MUA_HANG_IPOS_CHUAN.xlsx'): void {
+  const wb = createDefaultIposImportTemplateWorkbook();
+  writeXlsxFile(wb, fileName);
+}
+
+// -------------------------------------------------------------
+// CLEAN CELL UTILITIES (PREVENTS EMPTY STRING ARTIFACTS IN SST)
+// -------------------------------------------------------------
+
+/**
+ * Creates a clean XLSX WorkSheet from array-of-arrays without empty string ("") cells.
+ * Numbers are strictly typed as 'n' and non-empty strings as 's'.
+ */
+export function createWorksheetFromAoaClean(
+  data: any[][],
+  colsWidth?: Array<{ wch: number }>
+): XLSX.WorkSheet {
+  const ws: XLSX.WorkSheet = {};
+  let maxR = 0;
+  let maxC = 0;
+
+  for (let r = 0; r < data.length; r++) {
+    const row = data[r];
+    if (!row) continue;
+    for (let c = 0; c < row.length; c++) {
+      const val = row[c];
+      if (val === null || val === undefined) continue;
+
+      if (typeof val === 'number') {
+        if (!isNaN(val)) {
+          ws[XLSX.utils.encode_cell({ r, c })] = { t: 'n', v: val };
+          maxR = Math.max(maxR, r);
+          maxC = Math.max(maxC, c);
+        }
+      } else {
+        const str = String(val).trim();
+        // DO NOT write empty string "" to avoid useless entries in sharedStrings.xml
+        if (str.length > 0) {
+          ws[XLSX.utils.encode_cell({ r, c })] = { t: 's', v: str };
+          maxR = Math.max(maxR, r);
+          maxC = Math.max(maxC, c);
+        }
+      }
+    }
+  }
+
+  ws['!ref'] = XLSX.utils.encode_range({
+    s: { r: 0, c: 0 },
+    e: { r: Math.max(0, maxR), c: Math.max(0, maxC) },
+  });
+
+  if (colsWidth && colsWidth.length > 0) {
+    ws['!cols'] = colsWidth;
+  }
+
+  return ws;
+}
+
+// -------------------------------------------------------------
 // GENERATE EXCEL PURCHASE INVOICE EXPORT FOR IPOS IMPORT
 // -------------------------------------------------------------
 
@@ -2105,7 +2640,7 @@ export function generateIposExportWorkbook(
   masterData: IposMasterData,
   rows: MatchedInvoiceRow[],
   meta: {
-    supplierName: string;
+    supplierName?: string;
     supplierId?: string;
     warehouseId?: string;
     warehouseName?: string;
@@ -2116,132 +2651,95 @@ export function generateIposExportWorkbook(
     note?: string;
   }
 ): { workbook: XLSX.WorkBook; fileName: string } {
-  let workbook: XLSX.WorkBook;
+  const rowsToExport = rows && rows.length > 0 ? rows : [];
 
-  if (masterData.templateWorkbookBase64) {
-    const arrayBuffer = base64ToArrayBuffer(masterData.templateWorkbookBase64);
-    workbook = XLSX.read(arrayBuffer, { type: 'array', cellStyles: true });
-  } else {
-    // Build default standard iPOS inventory import workbook
-    workbook = XLSX.utils.book_new();
-    const wsData = [
-      ['PHIẾU NHẬP MUA HÀNG IPOS INVENTORY'],
-      ['Nhà cung cấp (*):', meta.supplierName || '', 'Mã NCC (*):', meta.supplierId || ''],
-      ['Kho nhập (*):', meta.warehouseName || '', 'Mã kho (*):', meta.warehouseId || ''],
-      ['Lý do nhập:', meta.reasonName || 'Nhập mua hàng thông thường', 'Mã lý do:', meta.reasonId || 'NM'],
-      ['Ngày chứng từ (*):', meta.documentDate || '', 'Số hóa đơn:', meta.invoiceNumber || '', 'Ghi chú:', meta.note || ''],
-      [],
-      [
-        'STT',
-        'Mã hàng hóa (*)',
-        'Tên hàng hóa',
-        'Mã ĐVT (*)',
-        'Tên ĐVT',
-        'Số lượng (*)',
-        'Đơn giá mua (*)',
-        'Chiết khấu (%)',
-        'Tiền chiết khấu',
-        'Thuế VAT (%)',
-        'Tiền thuế VAT',
-        'Thành tiền (*)',
-        'Ghi chú',
-      ],
-    ];
-    const ws = XLSX.utils.aoa_to_sheet(wsData);
-    XLSX.utils.book_append_sheet(workbook, ws, 'Nhập mua hàng');
+  // Step 1: Create the canonical 11-column iPOS purchase import workbook directly
+  const workbook = createDefaultIposImportTemplateWorkbook();
+  const sheet = workbook.Sheets[IPOS_DEFAULT_SHEET_NAME] || workbook.Sheets[workbook.SheetNames[0]];
+
+  if (!sheet) {
+    throw new Error(`Không tìm thấy bảng tính hợp lệ (${IPOS_DEFAULT_SHEET_NAME})`);
   }
 
-  let targetSheetName = workbook.SheetNames[0];
-  for (const sName of workbook.SheetNames) {
-    const norm = normalizeWithoutAccents(sName).toLowerCase();
-    if (norm.includes('nhap mua') || norm.includes('chi tiet') || norm.includes('phieu nhap') || norm.includes('import')) {
-      targetSheetName = sName;
-      break;
-    }
-  }
+  // Step 2: Populate detail rows starting at Row 3 (0-indexed r = 2) matching image.png exactly
+  const currentRow = 2;
 
-  const sheet = workbook.Sheets[targetSheetName];
-  const { headerRowIndex, colMap, dataStartRow } = findHeaderRowAndMap(sheet);
-  const validRows = rows.filter((r) => r.status !== 'RED' && (r.status === 'GREEN' || r.isManuallyConfirmed));
+  rowsToExport.forEach((row, idx) => {
+    const r = currentRow + idx;
+    const resolvedUnitCode = resolveIposExportUnitCode(row, masterData);
+    const resolvedItemName = row.item_name || row.selectedCandidate?.itemName || row.raw_item_name || '';
+    const resolvedItemId = row.item_id || row.selectedCandidate?.itemId || '';
 
-  if (headerRowIndex !== -1 && Object.keys(colMap).length >= 2) {
-    let currentRow = dataStartRow;
+    const qty = typeof row.quantity === 'number' ? row.quantity : Number(row.quantity) || 0;
+    const price = typeof row.price === 'number' ? row.price : Number(row.price) || 0;
+    const discount = typeof row.discount === 'number' ? row.discount : Number(row.discount) || 0;
+    const discountAmount =
+      row.discount_amount !== undefined && row.discount_amount !== null
+        ? Number(row.discount_amount)
+        : (qty * price * discount) / 100;
+    const subTotal =
+      row.sub_total !== undefined && row.sub_total !== null
+        ? Number(row.sub_total)
+        : qty * price - discountAmount;
+    const vatPct = typeof row.vat === 'number' ? row.vat : Number(row.vat) || 0;
+    const amountVat =
+      row.amount_vat !== undefined && row.amount_vat !== null
+        ? Number(row.amount_vat)
+        : (subTotal * vatPct) / 100;
+    const totalAmount =
+      row.total_amount !== undefined && row.total_amount !== null
+        ? Number(row.total_amount)
+        : subTotal + amountVat;
 
-    // Fill metadata headers if available in top lines
-    const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1:Z100');
-    for (let r = range.s.r; r < headerRowIndex; r++) {
-      for (let c = range.s.c; c <= range.e.c; c++) {
-        const cell = sheet[XLSX.utils.encode_cell({ r, c })];
-        if (cell && typeof cell.v === 'string') {
-          const cellText = normalizeWithoutAccents(cell.v).toLowerCase();
-          const nextCellAddr = XLSX.utils.encode_cell({ r, c: c + 1 });
-          if (cellText.includes('nha cung cap') && meta.supplierName) {
-            sheet[nextCellAddr] = { t: 's', v: meta.supplierName };
-          } else if (cellText.includes('ma ncc') && meta.supplierId) {
-            sheet[nextCellAddr] = { t: 's', v: meta.supplierId };
-          } else if (cellText.includes('kho') && meta.warehouseName) {
-            sheet[nextCellAddr] = { t: 's', v: meta.warehouseName };
-          } else if (cellText.includes('ngay') && meta.documentDate) {
-            sheet[nextCellAddr] = { t: 's', v: meta.documentDate };
-          } else if (cellText.includes('so hoa don') && meta.invoiceNumber) {
-            sheet[nextCellAddr] = { t: 's', v: meta.invoiceNumber };
-          }
-        }
-      }
+    // Col A (0): item_id (string)
+    if (resolvedItemId && resolvedItemId.trim().length > 0) {
+      sheet[XLSX.utils.encode_cell({ r, c: 0 })] = { t: 's', v: resolvedItemId.trim() };
     }
 
-    // Populate detail items
-    validRows.forEach((row, idx) => {
-      const r = currentRow + idx;
+    // Col B (1): item_name (string)
+    if (resolvedItemName && resolvedItemName.trim().length > 0) {
+      sheet[XLSX.utils.encode_cell({ r, c: 1 })] = { t: 's', v: resolvedItemName.trim() };
+    }
 
-      const setCell = (colIdx: number | undefined, val: any, type: 's' | 'n' = 's') => {
-        if (colIdx === undefined) return;
-        const addr = XLSX.utils.encode_cell({ r, c: colIdx });
-        if (val !== null && val !== undefined && val !== '') {
-          sheet[addr] = { t: type, v: val };
-        }
-      };
+    // Col C (2): unit_id (string)
+    if (resolvedUnitCode && resolvedUnitCode.trim().length > 0) {
+      sheet[XLSX.utils.encode_cell({ r, c: 2 })] = { t: 's', v: resolvedUnitCode.trim() };
+    }
 
-      setCell(colMap['stt'] ?? 0, idx + 1, 'n');
-      setCell(colMap['item_id'], row.item_id || row.selectedCandidate?.itemId, 's');
-      setCell(colMap['item_name'], row.item_name || row.selectedCandidate?.itemName, 's');
-      setCell(colMap['unit_id'], row.selectedCandidate?.unitId || row.unit, 's');
-      setCell(colMap['unit_name'] || colMap['unit'], row.unit || row.selectedCandidate?.unitName, 's');
-      setCell(colMap['quantity'], row.quantity, 'n');
-      setCell(colMap['price'], row.price, 'n');
-      setCell(colMap['discount'], row.discount, 'n');
-      setCell(colMap['discount_amount'], row.discount_amount, 'n');
-      setCell(colMap['vat'], row.vat, 'n');
-      setCell(colMap['amount_vat'], row.amount_vat, 'n');
-      setCell(
-        colMap['sub_total'],
-        row.sub_total || (row.quantity && row.price ? row.quantity * row.price : 0),
-        'n'
-      );
-      setCell(colMap['note'], row.note, 's');
-    });
+    // Col D (3): quantity (number)
+    sheet[XLSX.utils.encode_cell({ r, c: 3 })] = { t: 'n', v: qty };
 
-    range.e.r = Math.max(range.e.r, currentRow + validRows.length);
-    sheet['!ref'] = XLSX.utils.encode_range(range);
-  } else {
-    const newRowsAOA: any[][] = validRows.map((r, idx) => [
-      idx + 1,
-      r.item_id || r.selectedCandidate?.itemId || '',
-      r.item_name || r.selectedCandidate?.itemName || '',
-      r.selectedCandidate?.unitId || r.unit || '',
-      r.unit || r.selectedCandidate?.unitName || '',
-      r.quantity || 0,
-      r.price || 0,
-      r.discount || 0,
-      r.discount_amount || 0,
-      r.vat || 0,
-      r.amount_vat || 0,
-      r.sub_total || (r.quantity && r.price ? r.quantity * r.price : 0),
-      r.note || '',
-    ]);
+    // Col E (4): price (number)
+    sheet[XLSX.utils.encode_cell({ r, c: 4 })] = { t: 'n', v: price };
 
-    XLSX.utils.sheet_add_aoa(sheet, newRowsAOA, { origin: -1 });
-  }
+    // Col F (5): discount (number)
+    sheet[XLSX.utils.encode_cell({ r, c: 5 })] = { t: 'n', v: discount };
+
+    // Col G (6): discount_amount (number)
+    sheet[XLSX.utils.encode_cell({ r, c: 6 })] = { t: 'n', v: discountAmount };
+
+    // Col H (7): vat (number)
+    sheet[XLSX.utils.encode_cell({ r, c: 7 })] = { t: 'n', v: vatPct };
+
+    // Col I (8): amount_vat (number)
+    sheet[XLSX.utils.encode_cell({ r, c: 8 })] = { t: 'n', v: amountVat };
+
+    // Col J (9): note (string, omit if empty)
+    const noteText = (row.note || '').trim();
+    if (noteText.length > 0) {
+      sheet[XLSX.utils.encode_cell({ r, c: 9 })] = { t: 's', v: noteText };
+    }
+
+    // Col K (10): sub_total (number)
+    sheet[XLSX.utils.encode_cell({ r, c: 10 })] = { t: 'n', v: totalAmount };
+  });
+
+  // Step 3: Update worksheet reference range
+  const endRow = Math.max(1, 1 + rowsToExport.length);
+  sheet['!ref'] = XLSX.utils.encode_range({
+    s: { r: 0, c: 0 },
+    e: { r: endRow, c: 10 },
+  });
 
   const safeSupplier = meta.supplierName
     ? normalizeWithoutAccents(meta.supplierName).replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '')
@@ -2255,7 +2753,7 @@ export function generateIposExportWorkbook(
 }
 
 // -------------------------------------------------------------
-// DEDICATED CATALOG EXPORTERS
+// DEDICATED CATALOG EXPORTERS (WITH SST & CLEAN CELLS)
 // -------------------------------------------------------------
 
 export function exportMasterDataToExcel(masterData: IposMasterData, fileName = 'DANH_SACH_HANG_HOA_IPOS.xlsx'): void {
@@ -2269,34 +2767,55 @@ export function exportItemsToExcel(items: IposItem[], fileName = 'DANH_SACH_HANG
     idx + 1,
     it.itemId,
     it.itemName,
-    it.unitId || '',
-    it.unitName || '',
-    it.costPrice || '',
-    it.category || '',
-    it.barcode || '',
+    it.unitId,
+    it.unitName,
+    it.costPrice,
+    it.category,
+    it.barcode,
     it.status || 'Đang dùng',
   ]);
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const ws = createWorksheetFromAoaClean([headers, ...rows], [
+    { wch: 8 },
+    { wch: 18 },
+    { wch: 32 },
+    { wch: 14 },
+    { wch: 14 },
+    { wch: 16 },
+    { wch: 20 },
+    { wch: 18 },
+    { wch: 14 },
+  ]);
   XLSX.utils.book_append_sheet(wb, ws, 'Hàng hoá');
-  XLSX.writeFile(wb, fileName);
+  writeXlsxFile(wb, fileName);
 }
 
 export function exportCategoriesToExcel(cats: IposItemCategory[], fileName = 'DANH_SACH_NHOM_HANG_HOA_IPOS.xlsx'): void {
   const wb = XLSX.utils.book_new();
   const headers = ['STT', 'Mã nhóm (*)', 'Tên nhóm hàng (*)', 'Nhóm cha', 'Mô tả'];
-  const rows = cats.map((c, idx) => [idx + 1, c.categoryId, c.categoryName, c.parentCategoryId || '', c.description || '']);
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const rows = cats.map((c, idx) => [idx + 1, c.categoryId, c.categoryName, c.parentCategoryId, c.description]);
+  const ws = createWorksheetFromAoaClean([headers, ...rows], [
+    { wch: 8 },
+    { wch: 18 },
+    { wch: 28 },
+    { wch: 18 },
+    { wch: 30 },
+  ]);
   XLSX.utils.book_append_sheet(wb, ws, 'Nhóm hàng hoá');
-  XLSX.writeFile(wb, fileName);
+  writeXlsxFile(wb, fileName);
 }
 
 export function exportUnitsToExcel(units: IposUnit[], fileName = 'MAU_NHAP_DON_VI_TINH_IPOS.xlsx'): void {
   const wb = XLSX.utils.book_new();
   const headers = ['STT', 'Mã đơn vị tính (*)', 'Tên đơn vị tính (*)', 'Mô tả'];
-  const rows = units.map((u, idx) => [idx + 1, u.unitId, u.unitName, u.description || '']);
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const rows = units.map((u, idx) => [idx + 1, u.unitId, u.unitName, u.description]);
+  const ws = createWorksheetFromAoaClean([headers, ...rows], [
+    { wch: 8 },
+    { wch: 20 },
+    { wch: 24 },
+    { wch: 30 },
+  ]);
   XLSX.utils.book_append_sheet(wb, ws, 'Đơn vị tính');
-  XLSX.writeFile(wb, fileName);
+  writeXlsxFile(wb, fileName);
 }
 
 export function exportConversionsToExcel(convs: IposUnitConversion[], fileName = 'DANH_SACH_QUY_DOI_DON_VI_TINH_IPOS.xlsx'): void {
@@ -2304,16 +2823,24 @@ export function exportConversionsToExcel(convs: IposUnitConversion[], fileName =
   const headers = ['STT', 'Mã hàng', 'Tên hàng hóa', 'ĐVT quy đổi (Nguồn)', 'ĐVT gốc (Đích)', 'Tỷ lệ quy đổi', 'Mô tả'];
   const rows = convs.map((c, idx) => [
     idx + 1,
-    c.itemId || '',
-    c.itemName || '',
+    c.itemId,
+    c.itemName,
     c.sourceUnitName,
     c.targetUnitName,
     c.conversionRate,
-    c.description || '',
+    c.description,
   ]);
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const ws = createWorksheetFromAoaClean([headers, ...rows], [
+    { wch: 8 },
+    { wch: 18 },
+    { wch: 28 },
+    { wch: 20 },
+    { wch: 20 },
+    { wch: 16 },
+    { wch: 28 },
+  ]);
   XLSX.utils.book_append_sheet(wb, ws, 'Quy đổi ĐVT');
-  XLSX.writeFile(wb, fileName);
+  writeXlsxFile(wb, fileName);
 }
 
 export function exportRecipesToExcel(recipes: IposRecipe[], fileName = 'DANH_SACH_CONG_THUC_CHE_BIEN_IPOS.xlsx'): void {
@@ -2328,11 +2855,21 @@ export function exportRecipesToExcel(recipes: IposRecipe[], fileName = 'DANH_SAC
     r.quantity,
     r.unitName,
     r.lossRate || 0,
-    r.note || '',
+    r.note,
   ]);
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const ws = createWorksheetFromAoaClean([headers, ...rows], [
+    { wch: 8 },
+    { wch: 16 },
+    { wch: 26 },
+    { wch: 16 },
+    { wch: 26 },
+    { wch: 14 },
+    { wch: 12 },
+    { wch: 18 },
+    { wch: 24 },
+  ]);
   XLSX.utils.book_append_sheet(wb, ws, 'Công thức chế biến');
-  XLSX.writeFile(wb, fileName);
+  writeXlsxFile(wb, fileName);
 }
 
 export function exportWarehousesToExcel(warehouses: IposWarehouse[], fileName = 'DANH_SACH_KHO_HANG_IPOS.xlsx'): void {
@@ -2342,13 +2879,20 @@ export function exportWarehousesToExcel(warehouses: IposWarehouse[], fileName = 
     idx + 1,
     w.warehouseId,
     w.warehouseName,
-    w.branchId || '',
-    w.address || '',
-    w.phone || '',
+    w.branchId,
+    w.address,
+    w.phone,
   ]);
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const ws = createWorksheetFromAoaClean([headers, ...rows], [
+    { wch: 8 },
+    { wch: 16 },
+    { wch: 26 },
+    { wch: 16 },
+    { wch: 30 },
+    { wch: 18 },
+  ]);
   XLSX.utils.book_append_sheet(wb, ws, 'Kho hàng');
-  XLSX.writeFile(wb, fileName);
+  writeXlsxFile(wb, fileName);
 }
 
 export function exportCustomersToExcel(customers: IposCustomer[], fileName = 'DANH_SACH_KHACH_HANG_IPOS.xlsx'): void {
@@ -2358,14 +2902,22 @@ export function exportCustomersToExcel(customers: IposCustomer[], fileName = 'DA
     idx + 1,
     c.customerId,
     c.customerName,
-    c.phone || '',
-    c.address || '',
-    c.taxCode || '',
-    c.customerGroup || '',
+    c.phone,
+    c.address,
+    c.taxCode,
+    c.customerGroup,
   ]);
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const ws = createWorksheetFromAoaClean([headers, ...rows], [
+    { wch: 8 },
+    { wch: 18 },
+    { wch: 26 },
+    { wch: 16 },
+    { wch: 30 },
+    { wch: 16 },
+    { wch: 18 },
+  ]);
   XLSX.utils.book_append_sheet(wb, ws, 'Khách hàng');
-  XLSX.writeFile(wb, fileName);
+  writeXlsxFile(wb, fileName);
 }
 
 export function exportSuppliersToExcel(suppliers: IposSupplier[], fileName = 'DANH_SACH_NHA_CUNG_CAP_IPOS.xlsx'): void {
@@ -2375,14 +2927,22 @@ export function exportSuppliersToExcel(suppliers: IposSupplier[], fileName = 'DA
     idx + 1,
     s.supplierId,
     s.supplierName,
-    s.taxCode || '',
-    s.phone || '',
-    s.address || '',
-    s.supplierGroup || '',
+    s.taxCode,
+    s.phone,
+    s.address,
+    s.supplierGroup,
   ]);
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const ws = createWorksheetFromAoaClean([headers, ...rows], [
+    { wch: 8 },
+    { wch: 16 },
+    { wch: 28 },
+    { wch: 16 },
+    { wch: 16 },
+    { wch: 30 },
+    { wch: 18 },
+  ]);
   XLSX.utils.book_append_sheet(wb, ws, 'Nhà cung cấp');
-  XLSX.writeFile(wb, fileName);
+  writeXlsxFile(wb, fileName);
 }
 
 export function exportSupplierGroupsToExcel(groups: IposSupplierGroup[], fileName = 'DANH_SACH_NHOM_NHA_CUNG_CAP_IPOS.xlsx'): void {
@@ -2390,13 +2950,18 @@ export function exportSupplierGroupsToExcel(groups: IposSupplierGroup[], fileNam
   const headers = ['STT', 'Mã nhóm NCC (*)', 'Tên nhóm NCC (*)', 'Mô tả'];
   const rows = groups.map((g, idx) => [
     idx + 1,
-    g.groupId || g.supplierGroupId || '',
-    g.groupName || g.supplierGroupName || '',
-    g.description || '',
+    g.groupId || g.supplierGroupId,
+    g.groupName || g.supplierGroupName,
+    g.description,
   ]);
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const ws = createWorksheetFromAoaClean([headers, ...rows], [
+    { wch: 8 },
+    { wch: 18 },
+    { wch: 26 },
+    { wch: 30 },
+  ]);
   XLSX.utils.book_append_sheet(wb, ws, 'Nhóm NCC');
-  XLSX.writeFile(wb, fileName);
+  writeXlsxFile(wb, fileName);
 }
 
 export function exportReasonsToExcel(reasons: IposReason[], fileName = 'DANH_SACH_LY_DO_IPOS.xlsx'): void {
@@ -2407,12 +2972,19 @@ export function exportReasonsToExcel(reasons: IposReason[], fileName = 'DANH_SAC
     r.reasonId,
     r.reasonName,
     r.reasonType,
-    r.description || '',
+    r.description,
     r.isDefault ? 'Có' : 'Không',
   ]);
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const ws = createWorksheetFromAoaClean([headers, ...rows], [
+    { wch: 8 },
+    { wch: 16 },
+    { wch: 24 },
+    { wch: 16 },
+    { wch: 28 },
+    { wch: 12 },
+  ]);
   XLSX.utils.book_append_sheet(wb, ws, 'Lý do');
-  XLSX.writeFile(wb, fileName);
+  writeXlsxFile(wb, fileName);
 }
 
 export function exportPriceListsToExcel(priceLists: IposPriceList[], fileName = 'BANG_GIA_MUA_IPOS.xlsx'): void {
@@ -2424,13 +2996,22 @@ export function exportPriceListsToExcel(priceLists: IposPriceList[], fileName = 
     p.priceListName,
     p.itemId,
     p.itemName,
-    p.unitName || '',
+    p.unitName,
     p.price,
-    p.effectiveDate || '',
+    p.effectiveDate,
   ]);
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const ws = createWorksheetFromAoaClean([headers, ...rows], [
+    { wch: 8 },
+    { wch: 16 },
+    { wch: 24 },
+    { wch: 16 },
+    { wch: 26 },
+    { wch: 12 },
+    { wch: 16 },
+    { wch: 16 },
+  ]);
   XLSX.utils.book_append_sheet(wb, ws, 'Bảng giá');
-  XLSX.writeFile(wb, fileName);
+  writeXlsxFile(wb, fileName);
 }
 
 export function exportStockNormsToExcel(norms: IposStockNorm[], fileName = 'DINH_MUC_TON_KHO_IPOS.xlsx'): void {
@@ -2441,12 +3022,21 @@ export function exportStockNormsToExcel(norms: IposStockNorm[], fileName = 'DINH
     n.itemId,
     n.itemName,
     n.warehouseId,
-    n.warehouseName || '',
+    n.warehouseName,
     n.minStock,
     n.maxStock,
-    n.unitName || '',
+    n.unitName,
   ]);
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const ws = createWorksheetFromAoaClean([headers, ...rows], [
+    { wch: 8 },
+    { wch: 16 },
+    { wch: 26 },
+    { wch: 16 },
+    { wch: 24 },
+    { wch: 18 },
+    { wch: 18 },
+    { wch: 12 },
+  ]);
   XLSX.utils.book_append_sheet(wb, ws, 'Định mức tồn kho');
-  XLSX.writeFile(wb, fileName);
+  writeXlsxFile(wb, fileName);
 }
