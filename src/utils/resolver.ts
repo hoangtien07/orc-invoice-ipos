@@ -51,22 +51,59 @@ export function isRawMaterialItem(item: IposItem): boolean {
 }
 
 /**
+ * Check if two Vietnamese food names have conflicting diacritics / vowels on key homophones
+ * e.g. "Ngò" (coriander) vs "Ngô" (corn)
+ *      "Lá dứa" (pandan) vs "Trái dừa" (coconut) vs "Đũa" (chopsticks)
+ *      "Thịt bò" (beef) vs "Bơ" (butter)
+ */
+export function hasVietnameseAccentConflict(rawWithAccents: string, targetWithAccents: string): boolean {
+  if (!rawWithAccents || !targetWithAccents) return false;
+  const r = rawWithAccents.toLowerCase();
+  const t = targetWithAccents.toLowerCase();
+
+  // 1. Ngò (rau ngò) vs Ngô (bắp ngô / ngô ngọt)
+  if (/\bngò\b/.test(r) && /\bngô\b/.test(t)) return true;
+  if (/\bngô\b/.test(r) && /\bngò\b/.test(t)) return true;
+
+  // 2. Dứa (lá dứa, thơm) vs Dừa (trái dừa) vs Đũa (đũa ăn) vs Dưa (dưa leo, dưa hấu)
+  const duaRawMatch = /\b(dứa|dừa|đũa|dưa)\b/.exec(r)?.[0];
+  const duaTargetMatch = /\b(dứa|dừa|đũa|dưa)\b/.exec(t)?.[0];
+  if (duaRawMatch && duaTargetMatch && duaRawMatch !== duaTargetMatch) {
+    return true;
+  }
+
+  // 3. Bò (thịt bò) vs Bơ (bơ sáp, bơ lạt)
+  if (/\bbò\b/.test(r) && /\bbơ\b/.test(t)) return true;
+  if (/\bbơ\b/.test(r) && /\bbò\b/.test(t)) return true;
+
+  // 4. Sả (củ sả, cây sả) vs Xả (xả rác)
+  if (/\bsả\b/.test(r) && /\bxả\b/.test(t)) return true;
+
+  // 5. Gà (thịt gà) vs Giá (giá đỗ)
+  if (/\bgà\b/.test(r) && /\bgiá\b/.test(t)) return true;
+  if (/\bgiá\b/.test(r) && /\bgà\b/.test(t)) return true;
+
+  return false;
+}
+
+/**
  * Mandatory culinary synonyms & mapping rules for Vietnamese F&B Inventory
+ * Note: Uses pure culinary keyword equivalences, avoiding hardcoded mock IDs.
  */
 const MANDATORY_CULINARY_RULES: Array<{
   triggers: string[];
   targetCodeKeywords: string[];
 }> = [
-  { triggers: ['baroi heo', 'ba roi heo', 'thit ba roi heo'], targetCodeKeywords: ['CP07', 'ba chi heo', 'thit ba chi heo'] },
-  { triggers: ['ngo ri', 'rau ngo ri'], targetCodeKeywords: ['CP117', 'mui ta', 'rau mui'] },
-  { triggers: ['ngo tay', 'rau ngo tay'], targetCodeKeywords: ['CP181', 'mui tay da lat', 'ngò tây', 'mui tay'] },
-  { triggers: ['ngo xuan', 'rau ngo xuan'], targetCodeKeywords: ['CP30', 'rau ngo xuan', 'ngo xuan'] },
-  { triggers: ['la dua', 'la dua tuoi'], targetCodeKeywords: ['3HT6YXUMFJAG', 'la nep', 'lá nếp'] },
-  { triggers: ['dau hu trang', 'dau hu'], targetCodeKeywords: ['CP169', 'dau phu', 'dau hu trang'] },
-  { triggers: ['dua leo baby', 'dua leo'], targetCodeKeywords: ['CP302', 'dua chuot', 'dua leo baby'] },
-  { triggers: ['sa cay', 'sa tuoi'], targetCodeKeywords: ['CP170', 'sa tuoi', 'sa cay'] },
-  { triggers: ['toi cu', 'toi ta'], targetCodeKeywords: ['CP20', 'toi ta', 'toi cu'] },
-  { triggers: ['tui zip bac', 'tui zip'], targetCodeKeywords: ['CP237', 'tui zip bac 25x35'] },
+  { triggers: ['baroi heo', 'ba roi heo', 'thit ba roi heo'], targetCodeKeywords: ['ba chi heo', 'thit ba chi heo', 'ba chi'] },
+  { triggers: ['ngo ri', 'rau ngo ri'], targetCodeKeywords: ['mui ta', 'rau mui', 'ngo ri'] },
+  { triggers: ['ngo tay', 'rau ngo tay'], targetCodeKeywords: ['ngò tây', 'mui tay da lat', 'mui tay'] },
+  { triggers: ['ngo xuan', 'rau ngo xuan'], targetCodeKeywords: ['rau ngo xuan', 'ngo xuan'] },
+  { triggers: ['la dua', 'la dua tuoi'], targetCodeKeywords: ['la nep', 'lá nếp', 'la dua'] },
+  { triggers: ['dau hu trang', 'dau hu'], targetCodeKeywords: ['dau phu', 'dau hu trang'] },
+  { triggers: ['dua leo baby', 'dua leo'], targetCodeKeywords: ['dua chuot', 'dua leo baby', 'dua leo'] },
+  { triggers: ['sa cay', 'sa tuoi'], targetCodeKeywords: ['sa tuoi', 'sa cay', 'sa'] },
+  { triggers: ['toi cu', 'toi ta'], targetCodeKeywords: ['toi ta', 'toi cu', 'toi'] },
+  { triggers: ['tui zip bac', 'tui zip'], targetCodeKeywords: ['tui zip bac 25x35', 'tui zip bac', 'tui zip'] },
 ];
 
 export class CatalogResolver {
@@ -146,7 +183,7 @@ export class CatalogResolver {
         { name: 'cleanData.coreKeywords', weight: 0.1 },
       ],
       includeScore: true,
-      threshold: 0.6,
+      threshold: 0.35,
       distance: 100,
       minMatchCharLength: 2,
       ignoreLocation: true,
@@ -432,6 +469,36 @@ export class CatalogResolver {
       seenIds.add(itemByCode.itemId);
     }
 
+    // B2. Exact Vietnamese Accented Name Match (Priority: 99%)
+    const itemByExactName = this.itemMapByNormName.get(normRaw);
+    if (itemByExactName && !seenIds.has(itemByExactName.itemId)) {
+      const unitComp = this.checkUnitCompatibility(rawUnit, itemByExactName.unitName, itemByExactName.itemId, itemByExactName.unitId);
+      candidates.push({
+        item: itemByExactName,
+        score: 0.01,
+        confidencePercent: 99,
+        matchType: 'exact_name',
+        unitMatch: unitComp.isCompatible,
+      });
+      seenIds.add(itemByExactName.itemId);
+    }
+
+    // B3. Exact Unaccented Name Match (Priority: 96%)
+    const itemByNoAccent = this.itemMapByNormNoAccent.get(normRawNoAccent);
+    if (itemByNoAccent && !seenIds.has(itemByNoAccent.itemId)) {
+      if (!hasVietnameseAccentConflict(rawItemName, itemByNoAccent.itemName)) {
+        const unitComp = this.checkUnitCompatibility(rawUnit, itemByNoAccent.unitName, itemByNoAccent.itemId, itemByNoAccent.unitId);
+        candidates.push({
+          item: itemByNoAccent,
+          score: 0.04,
+          confidencePercent: 96,
+          matchType: 'exact_name',
+          unitMatch: unitComp.isCompatible,
+        });
+        seenIds.add(itemByNoAccent.itemId);
+      }
+    }
+
     // C. Mandatory F&B Culinary Synonyms Match (Priority: 97%)
     for (const rule of MANDATORY_CULINARY_RULES) {
       const matchTrigger = rule.triggers.some(
@@ -492,6 +559,7 @@ export class CatalogResolver {
     for (const indexed of this.searchItems) {
       if (seenIds.has(indexed.item.itemId)) continue;
 
+      const accentConflict = hasVietnameseAccentConflict(rawItemName, indexed.item.itemName);
       const itemNormNoAccent = indexed.normNoAccent;
       const itemCoreKeywords = indexed.cleanData.coreKeywords;
       const itemTokens = indexed.tokens;
@@ -501,40 +569,52 @@ export class CatalogResolver {
       let matchType: CandidateMatch['matchType'] = 'fuzzy';
 
       // 1. Direct match on core keywords or exact normalized name
-      if (normRawNoAccent === itemNormNoAccent || rawCleaned === itemNormNoAccent) {
-        score = 0.96;
+      if (normRaw === indexed.normName) {
+        score = 0.99;
         matchType = 'exact_name';
+      } else if (normRawNoAccent === itemNormNoAccent || rawCleaned === itemNormNoAccent) {
+        score = accentConflict ? 0.45 : 0.95;
+        matchType = accentConflict ? 'fuzzy' : 'exact_name';
       } else if (coreKeywords && (coreKeywords === itemNormNoAccent || coreKeywords === itemCoreKeywords)) {
-        score = 0.94;
-        matchType = 'exact_name';
+        score = accentConflict ? 0.40 : 0.92;
+        matchType = accentConflict ? 'fuzzy' : 'exact_name';
       } else {
         // 2. Direct Substring Inclusion Check
-        // E.g. "khoai tay cong" is in "[p000131] khoai tay cong 9 dong lanh aviko straight cut"
         const dbInRaw = rawCleaned.includes(itemNormNoAccent) || normRawNoAccent.includes(itemNormNoAccent);
         const dbCoreInRaw = itemCoreKeywords && (rawCleaned.includes(itemCoreKeywords) || normRawNoAccent.includes(itemCoreKeywords));
         const rawInDb = itemNormNoAccent.includes(coreKeywords) || itemNormNoAccent.includes(rawCleaned);
 
         if (dbInRaw || dbCoreInRaw) {
           const lenRatio = itemNormNoAccent.length / Math.max(rawCleaned.length, 1);
-          score = Math.max(score, 0.88 + Math.min(lenRatio * 0.08, 0.08));
-          matchType = 'exact_name';
+          // If DB item is just 1 short word (e.g. "thit", "bot", "rau", "ca"), it should NOT get 0.88+
+          if (itemTokens.length === 1 && itemNormNoAccent.length <= 4 && lenRatio < 0.5) {
+            score = Math.max(score, 0.42 + lenRatio * 0.25);
+            matchType = 'fuzzy';
+          } else {
+            score = Math.max(score, 0.76 + Math.min(lenRatio * 0.18, 0.18));
+            matchType = lenRatio >= 0.6 ? 'exact_name' : 'fuzzy';
+          }
         } else if (rawInDb && coreKeywords.length >= 4) {
           const lenRatio = coreKeywords.length / Math.max(itemNormNoAccent.length, 1);
-          score = Math.max(score, 0.84 + Math.min(lenRatio * 0.10, 0.10));
-          matchType = 'exact_name';
+          if (rawTokens.length === 1 && coreKeywords.length <= 4 && lenRatio < 0.5) {
+            score = Math.max(score, 0.42 + lenRatio * 0.25);
+            matchType = 'fuzzy';
+          } else {
+            score = Math.max(score, 0.74 + Math.min(lenRatio * 0.18, 0.18));
+            matchType = lenRatio >= 0.6 ? 'exact_name' : 'fuzzy';
+          }
         }
 
         // 3. Token Overlap & Jaccard / Dice Coverage
         const overlap = computeTokenOverlap(rawTokens, itemTokens);
         if (overlap.precision >= 0.99 && rawTokens.length > 0) {
-          // All tokens from raw query are in this item (e.g. 'ot' in 'ot cay', 'toi' in 'toi cu', 'ca chua' in 'ca chua bi')
-          const tokenScore = 0.85 + Math.min(overlap.dice * 0.10, 0.10);
+          const tokenScore = 0.84 + Math.min(overlap.dice * 0.10, 0.10);
           if (tokenScore > score) {
             score = tokenScore;
             matchType = 'exact_name';
           }
         } else if (overlap.recall >= 0.99 && itemTokens.length >= 2) {
-          const tokenScore = 0.86 + Math.min(overlap.dice * 0.08, 0.08);
+          const tokenScore = 0.82 + Math.min(overlap.dice * 0.08, 0.08);
           if (tokenScore > score) {
             score = tokenScore;
             matchType = 'fuzzy';
@@ -545,18 +625,21 @@ export class CatalogResolver {
             score = tokenScore;
             matchType = 'fuzzy';
           }
-        } else if (overlap.sharedCount === 1 && itemTokens.length === 1 && rawTokens.length <= 3) {
-          const tokenScore = 0.60 + overlap.dice * 0.2;
-          if (tokenScore > score) {
-            score = tokenScore;
-            matchType = 'fuzzy';
+        } else if (overlap.sharedCount === 1 && itemTokens.length === 1 && rawTokens.length <= 2) {
+          const sharedToken = itemTokens[0];
+          if (sharedToken.length >= 5) {
+            const tokenScore = 0.45 + overlap.dice * 0.2;
+            if (tokenScore > score) {
+              score = tokenScore;
+              matchType = 'fuzzy';
+            }
           }
         }
 
         // 4. Synonym Expansion Check
         for (const syn of querySynonyms) {
           if (itemNormNoAccent.includes(syn) || syn.includes(itemNormNoAccent)) {
-            const synScore = 0.88;
+            const synScore = 0.85;
             if (synScore > score) {
               score = synScore;
               matchType = 'fuzzy';
@@ -570,14 +653,18 @@ export class CatalogResolver {
           const maxLen = Math.max(coreKeywords.length, itemCoreKeywords.length);
           if (maxLen > 0) {
             const levRatio = 1 - dist / maxLen;
-            if (levRatio > 0.75) {
-              const levScore = 0.70 + levRatio * 0.22;
+            if (levRatio > 0.78) {
+              const levScore = 0.68 + levRatio * 0.22;
               if (levScore > score) {
                 score = levScore;
                 matchType = 'fuzzy';
               }
             }
           }
+        }
+
+        if (accentConflict) {
+          score = Math.max(0.1, score - 0.35);
         }
       }
 
@@ -726,8 +813,8 @@ export class CatalogResolver {
 
     // Check candidate quality
     if (topCandidate) {
-      // If top candidate has high confidence (>= 75%) and unit is compatible
-      if (topCandidate.confidencePercent >= 75) {
+      // If top candidate has high confidence (>= 80%) and unit is compatible
+      if (topCandidate.confidencePercent >= 80) {
         if (unitComp.isCompatible) {
           return { status: 'GREEN', warnings: [] };
         } else {
@@ -735,16 +822,20 @@ export class CatalogResolver {
         }
       }
 
-      // Medium confidence (40% - 74%): Mark YELLOW for user review
-      if (topCandidate.confidencePercent >= 40) {
-        warnings.push(`Đã tự động chọn mặt hàng sát nghĩa nhất (${topCandidate.confidencePercent}%) - Vui lòng kiểm tra lại nếu cần`);
+      // Medium confidence (70% - 79%): Mark YELLOW for user review
+      if (topCandidate.confidencePercent >= 70) {
+        warnings.push(`Đã tự động chọn mặt hàng sát nghĩa nhất (${topCandidate.confidencePercent}%) - Vui lòng kiểm tra lại`);
         return { status: 'YELLOW', warnings };
       }
     }
 
-    // Low confidence (< 40%): Item is practically not in DB
+    // Low confidence (< 70%): Not auto-assigned, requires user selection
     if (!selectedItem) {
-      warnings.push('Mặt hàng chưa có trong danh mục iPOS - Vui lòng gán mã hoặc tạo mới');
+      if (candidates.length > 0) {
+        warnings.push(`Độ khớp thấp (${candidates[0].confidencePercent}%). Vui lòng xác nhận chọn mã hàng iPOS`);
+      } else {
+        warnings.push('Mặt hàng chưa có trong danh mục iPOS - Vui lòng gán mã hoặc tạo mới');
+      }
       return { status: 'RED', warnings };
     }
 
@@ -761,8 +852,8 @@ export class CatalogResolver {
     return rows.map((raw, idx) => {
       const candidates = this.resolveCandidates(raw.raw_item_name, raw.raw_unit, supplierId);
       
-      // Auto-fill top candidate if confidence >= 40%
-      const topCandidateMatch = candidates.length > 0 && candidates[0].confidencePercent >= 40 ? candidates[0] : null;
+      // Auto-fill top candidate only if confidence >= 70%
+      const topCandidateMatch = candidates.length > 0 && candidates[0].confidencePercent >= 70 ? candidates[0] : null;
       const topCandidate = topCandidateMatch ? topCandidateMatch.item : null;
       const isLearnedAlias = topCandidateMatch?.matchType === 'learned_alias';
 
@@ -787,7 +878,7 @@ export class CatalogResolver {
 
         raw_item_name: raw.raw_item_name,
         item_id: topCandidate?.itemId || '',
-        item_name: topCandidate?.itemName || raw.raw_item_name,
+        item_name: topCandidate ? topCandidate.itemName : raw.raw_item_name,
         unit: unitComp.matchedUnit || topCandidate?.unitId || topCandidate?.unitName || raw.raw_unit || '',
         quantity: raw.quantity,
         price: raw.price,

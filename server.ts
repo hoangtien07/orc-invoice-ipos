@@ -125,12 +125,9 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Candidate models in priority order: Gemini 3.7 Flash -> Flash Fallbacks (2.5 Flash, 2.0 Flash, 1.5 Flash, 3.1 Flash Lite)
+// Candidate models in priority order: Gemini 3.8 Flash -> Flash Latest -> Flash Lite
 const CANDIDATE_MODELS = [
-  'gemini-3.7-flash',
-  'gemini-2.5-flash',
-  'gemini-2.0-flash',
-  'gemini-1.5-flash',
+  'gemini-3.8-flash',
   'gemini-flash-latest',
   'gemini-3.1-flash-lite',
 ];
@@ -303,6 +300,132 @@ Tuân thủ nghiêm ngặt cấu trúc JSON Schema được cung cấp.`;
       success: false,
       error: userMessage,
       details: error instanceof z.ZodError ? (error.issues ?? (error as any).errors) : error?.message,
+    });
+  }
+});
+
+// ==========================================
+// PHASE 2: SMART AI RECONCILIATION DIAGNOSTICS
+// ==========================================
+
+const geminiReconciliationDiagnosisSchema = {
+  type: Type.OBJECT,
+  properties: {
+    executiveSummary: {
+      type: Type.STRING,
+      description: 'Tổng kết đánh giá rủi ro tài chính và sai lệch công nợ một cách súc tích (2-3 câu).',
+    },
+    rootCauses: {
+      type: Type.ARRAY,
+      description: 'Danh sách các nguyên nhân gốc rễ dẫn đến sai lệch.',
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          cause: { type: Type.STRING, description: 'Tên nguyên nhân (ví dụ: Tự ý tăng giá không báo trước, Hao hụt tự nhiên tươi sống, Tính tiền món chưa giao)' },
+          severity: { type: Type.STRING, description: 'Mức độ nghiêm trọng: HIGH, MEDIUM, LOW' },
+          affectedItems: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Các mặt hàng bị ảnh hưởng' },
+          explanation: { type: Type.STRING, description: 'Phân tích chi tiết nguyên nhân theo nghiệp vụ nhà hàng F&B' },
+        },
+        required: ['cause', 'severity', 'affectedItems', 'explanation'],
+      },
+    },
+    actionRecommendations: {
+      type: Type.ARRAY,
+      description: 'Đề xuất hành động xử lý cụ thể cho từng mặt hàng sai lệch.',
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          itemName: { type: Type.STRING },
+          financialImpact: { type: Type.STRING, description: 'Số tiền và tác động tài chính' },
+          suggestedAction: { type: Type.STRING, description: 'Hành động cụ thể (Trừ tiền, Chấp nhận hao hụt, Bổ sung phiếu kho)' },
+          negotiationScript: { type: Type.STRING, description: 'Lý lẽ đàm phán hoặc căn cứ đối chất với NCC' },
+        },
+        required: ['itemName', 'financialImpact', 'suggestedAction', 'negotiationScript'],
+      },
+    },
+    formalNoticeText: {
+      type: Type.STRING,
+      description: 'Toàn văn công văn/thông báo đối soát gửi NCC (kèm tiêu đề, kính gửi, bảng chi tiết tiền trừ, đề nghị xuất hóa đơn điều chỉnh hoặc cấn trừ công nợ, chữ ký đại diện).',
+    },
+  },
+  required: ['executiveSummary', 'rootCauses', 'actionRecommendations', 'formalNoticeText'],
+};
+
+app.post('/api/reconciliation-diagnose', async (req, res) => {
+  try {
+    const { supplierName, summary, discrepancies } = req.body;
+
+    if (!discrepancies || !Array.isArray(discrepancies) || discrepancies.length === 0) {
+      return res.status(400).json({ success: false, error: 'Không có danh sách chênh lệch để phân tích' });
+    }
+
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        error: 'Chưa cấu hình GEMINI_API_KEY trên máy chủ.',
+      });
+    }
+
+    const systemPrompt = `Bạn là Giám đốc Tài chính (CFO) & Chuyên gia Kiểm toán Kho Vận cao cấp chuyên về ngành Chuỗi Nhà Hàng & F&B tại Việt Nam.
+Nhiệm vụ của bạn là phân tích sâu nguyên nhân gốc rễ các sai lệch giữa Báo cáo thực nhập kho IVT iPOS và Hóa đơn điện tử VAT của Nhà cung cấp.
+Sau đó, hãy soạn thảo một Công văn / Thông báo Đối soát Công nợ trang trọng, sắc bén, tuân thủ Nghị định 123/2020/NĐ-CP và Luật Quản lý Thuế Việt Nam để nhà hàng gửi cho Nhà cung cấp yêu cầu cấn trừ công nợ hoặc xuất hóa đơn điều chỉnh.`;
+
+    const userPrompt = `Hãy phân tích dữ liệu đối soát thực tế của Nhà cung cấp: "${supplierName || 'Nhà cung cấp'}"
+Tổng số tiền thực nhận (iPOS): ${summary?.totalIposAmount?.toLocaleString('vi-VN')} đ
+Tổng số tiền Hóa đơn NCC: ${summary?.totalInvoiceAmount?.toLocaleString('vi-VN')} đ
+Tổng số tiền NCC tính thừa đề nghị trừ: ${summary?.totalOverchargedAmount?.toLocaleString('vi-VN')} đ
+
+Danh sách các mặt hàng có chênh lệch:
+${JSON.stringify(discrepancies, null, 2)}
+
+Hãy xuất kết quả phân tích theo đúng cấu trúc JSON Schema được yêu cầu.`;
+
+    let responseText: string | null = null;
+    let usedModel = CANDIDATE_MODELS[0];
+
+    for (const modelName of CANDIDATE_MODELS) {
+      try {
+        console.log(`[Gemini Diagnosis] Calling model: ${modelName}...`);
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: userPrompt,
+          config: {
+            systemInstruction: systemPrompt,
+            responseMimeType: 'application/json',
+            responseSchema: geminiReconciliationDiagnosisSchema,
+            temperature: 0.2,
+          },
+        });
+
+        if (response?.text) {
+          responseText = response.text;
+          usedModel = modelName;
+          break;
+        }
+      } catch (err: any) {
+        console.warn(`[Gemini Diagnosis] Model ${modelName} failed:`, err?.message);
+        if (isTransientError(err)) {
+          await sleep(1000);
+          continue;
+        }
+      }
+    }
+
+    if (!responseText) {
+      throw new Error('Tất cả mô hình AI đều không thể phản hồi');
+    }
+
+    const parsedData = JSON.parse(responseText);
+    return res.json({
+      success: true,
+      data: parsedData,
+      modelUsed: usedModel,
+    });
+  } catch (error: any) {
+    console.error('Error in /api/reconciliation-diagnose:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Lỗi phân tích AI',
     });
   }
 });

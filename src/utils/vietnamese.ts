@@ -467,20 +467,20 @@ export function getAvailableSystemUnits(
  * (Origins, Brands, Packaging forms, Temperature states, Size qualifiers)
  */
 const FOOD_NOISE_WORDS = new Set([
-  // Origins
-  'my', 'mỹ', 'usa', 'us', 'brazil', 'uc', 'úc', 'aus', 'australia', 'canada', 'can',
+  // Origins (keep specific ones, avoid 'can' which is packaging unit)
+  'my', 'mỹ', 'usa', 'us', 'brazil', 'uc', 'úc', 'aus', 'australia', 'canada',
   'nhat', 'nhật', 'japan', 'han', 'hàn', 'korea', 'dan mach', 'đan mạch', 'ba lan', 'balan',
   'nga', 'russia', 'an do', 'ấn độ', 'india', 'phap', 'pháp', 'france', 'tay ban nha', 'tây ban nha', 'spain',
   'viet nam', 'việt nam', 'vn', 'nhap khau', 'nhập khẩu', 'xuat khau', 'xuất khẩu',
   
   // Brands
   'swift', 'aviko', 'grain valley', 'grainvalley', 'excel', 'cargill', 'tyson', 'miratorg',
-  'kilcoy', 'teys', 'st helens', 'st. helens', 'cp', 'c.p.', 'vissan', 'san ha', 'san hà',
+  'kilcoy', 'teys', 'st helens', 'st. helens', 'c.p.', 'vissan', 'san ha', 'san hà',
   'dabaco', 'ba huan', 'ba huân', 'cj', 'meaty', 'sunjin', 'japfa', 'nutreco', 'greenfeed',
 
-  // Temperature / Processing states
-  'dong lanh', 'đông lạnh', 'tuoi', 'tươi', 'nong', 'nóng', 'mat', 'mát', 'kho', 'khô',
-  'chin', 'chín', 'song', 'sống', 'say', 'sấy', 'chua', 'ngot', 'ngọt', 'cay',
+  // Temperature / Processing states (retain 'kho', 'tuoi', 'cay' to avoid confusing fresh vs dried and items like sa cay)
+  'dong lanh', 'đông lạnh', 'nong', 'nóng', 'mat', 'mát',
+  'chin', 'chín', 'song', 'sống', 'say', 'sấy',
 
   // Grades / Qualifiers
   'loai 1', 'loại 1', 'loai 2', 'loại 2', 'loai a', 'loại a', 'loai b', 'loại b',

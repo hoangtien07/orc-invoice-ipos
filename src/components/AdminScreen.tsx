@@ -1241,6 +1241,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({
         {/* TAB 15: BACKUP */}
         {activeTab === 'backup' && (
           <BackupTab
+            masterData={masterData}
             onMasterDataUpdated={onMasterDataUpdated}
             onAliasesUpdated={onAliasesUpdated}
             setNotification={setNotification}

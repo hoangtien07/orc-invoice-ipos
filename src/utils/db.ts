@@ -16,10 +16,12 @@ import {
   LearnedUnitAlias,
   MatchedInvoiceRow,
   RawInvoiceData,
+  ReconciliationSession,
 } from '../types';
+import { SAMPLE_IPOS_MASTER_DATA } from '../data/mockData';
 
 const DB_NAME = 'ipos_invoice_ai_db_v3';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let dbInstance: IDBDatabase | null = null;
 
@@ -70,6 +72,12 @@ export async function getDb(): Promise<IDBDatabase> {
         const histStore = db.createObjectStore('invoice_history', { keyPath: 'id' });
         histStore.createIndex('by_created', 'createdAt', { unique: false });
       }
+
+      // Reconciliation sessions store
+      if (!db.objectStoreNames.contains('reconciliation_sessions')) {
+        const reconStore = db.createObjectStore('reconciliation_sessions', { keyPath: 'id' });
+        reconStore.createIndex('by_updated', 'updatedAt', { unique: false });
+      }
     };
 
     request.onsuccess = () => {
@@ -83,18 +91,39 @@ export async function getDb(): Promise<IDBDatabase> {
   });
 }
 
+export interface CloudPushHook {
+  pushMasterData?: (data: IposMasterData) => Promise<void>;
+  pushItemAlias?: (alias: LearnedItemAlias) => Promise<void>;
+  deleteItemAlias?: (id: string) => Promise<void>;
+  pushUnitAlias?: (raw: string, target: string) => Promise<void>;
+  deleteUnitAlias?: (raw: string) => Promise<void>;
+  pushInvoice?: (session: any) => Promise<void>;
+  pushReconciliation?: (session: ReconciliationSession) => Promise<void>;
+  deleteReconciliation?: (id: string) => Promise<void>;
+  clearCloud?: () => Promise<void>;
+}
+
+let cloudHook: CloudPushHook | null = null;
+export function registerCloudHook(hook: CloudPushHook) {
+  cloudHook = hook;
+}
+
 /**
  * Save Master Data into IndexedDB
  */
-export async function saveMasterData(data: IposMasterData): Promise<void> {
+export async function saveMasterData(data: IposMasterData, syncToCloud = true): Promise<void> {
   const db = await getDb();
-  return new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     const tx = db.transaction('master_data', 'readwrite');
     const store = tx.objectStore('master_data');
-    const req = store.put({ id: 'current_master_data', ...data, updatedAt: Date.now() });
+    const req = store.put({ id: 'current_master_data', ...data, updatedAt: data.updatedAt || Date.now() });
     req.onsuccess = () => resolve();
     req.onerror = () => reject(req.error);
   });
+
+  if (syncToCloud && cloudHook?.pushMasterData) {
+    cloudHook.pushMasterData(data).catch((e) => console.warn('Could not auto-push master data to cloud:', e));
+  }
 }
 
 /**
@@ -166,7 +195,7 @@ export async function loadMasterData(): Promise<IposMasterData | null> {
       const tx = db.transaction('master_data', 'readonly');
       const store = tx.objectStore('master_data');
       const req = store.get('current_master_data');
-      req.onsuccess = () => {
+      req.onsuccess = async () => {
         if (req.result) {
           const { id, updatedAt, ...rest } = req.result;
           const masterData = rest as IposMasterData;
@@ -176,7 +205,13 @@ export async function loadMasterData(): Promise<IposMasterData | null> {
           }
           resolve(masterData);
         } else {
-          resolve(null);
+          // If completely empty, auto-seed with standard sample master data to prevent reset
+          try {
+            await saveMasterData(SAMPLE_IPOS_MASTER_DATA, false);
+            resolve(SAMPLE_IPOS_MASTER_DATA);
+          } catch (e) {
+            resolve(SAMPLE_IPOS_MASTER_DATA);
+          }
         }
       };
       req.onerror = () => reject(req.error);
@@ -190,26 +225,32 @@ export async function loadMasterData(): Promise<IposMasterData | null> {
 /**
  * Save or update learned Item Alias
  */
-export async function saveLearnedItemAlias(alias: {
-  supplier_id: string;
-  supplier_name?: string;
-  normalized_raw_item_name: string;
-  raw_item_sample: string;
-  selected_item_id: string;
-  selected_item_name: string;
-  selected_unit?: string;
-}): Promise<void> {
+export async function saveLearnedItemAlias(
+  alias: {
+    id?: string;
+    supplier_id: string;
+    supplier_name?: string;
+    normalized_raw_item_name: string;
+    raw_item_sample: string;
+    selected_item_id: string;
+    selected_item_name: string;
+    selected_unit?: string;
+    updatedAt?: number;
+    timesUsed?: number;
+  },
+  syncToCloud = true
+): Promise<void> {
   const db = await getDb();
-  const id = `${alias.supplier_id || '*'}:::${alias.normalized_raw_item_name}`;
+  const id = alias.id || `${alias.supplier_id || '*'}:::${alias.normalized_raw_item_name}`;
 
-  return new Promise((resolve, reject) => {
+  const record: LearnedItemAlias = await new Promise((resolve, reject) => {
     const tx = db.transaction('item_aliases', 'readwrite');
     const store = tx.objectStore('item_aliases');
 
     const getReq = store.get(id);
     getReq.onsuccess = () => {
       const existing = getReq.result as LearnedItemAlias | undefined;
-      const record: LearnedItemAlias = {
+      const rec: LearnedItemAlias = {
         id,
         supplier_id: alias.supplier_id || '*',
         supplier_name: alias.supplier_name || '',
@@ -218,16 +259,20 @@ export async function saveLearnedItemAlias(alias: {
         selected_item_id: alias.selected_item_id,
         selected_item_name: alias.selected_item_name,
         selected_unit: alias.selected_unit || '',
-        updatedAt: Date.now(),
-        timesUsed: (existing?.timesUsed || 0) + 1,
+        updatedAt: alias.updatedAt || Date.now(),
+        timesUsed: alias.timesUsed !== undefined ? alias.timesUsed : (existing?.timesUsed || 0) + 1,
       };
 
-      const putReq = store.put(record);
-      putReq.onsuccess = () => resolve();
+      const putReq = store.put(rec);
+      putReq.onsuccess = () => resolve(rec);
       putReq.onerror = () => reject(putReq.error);
     };
     getReq.onerror = () => reject(getReq.error);
   });
+
+  if (syncToCloud && cloudHook?.pushItemAlias) {
+    cloudHook.pushItemAlias(record).catch((e) => console.warn('Could not auto-push item alias to cloud:', e));
+  }
 }
 
 /**
@@ -260,23 +305,31 @@ export async function getLearnedItemAliases(supplierId?: string): Promise<Learne
 /**
  * Delete a learned alias
  */
-export async function deleteLearnedAlias(id: string): Promise<void> {
+export async function deleteLearnedAlias(id: string, syncToCloud = true): Promise<void> {
   const db = await getDb();
-  return new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     const tx = db.transaction('item_aliases', 'readwrite');
     const store = tx.objectStore('item_aliases');
     const req = store.delete(id);
     req.onsuccess = () => resolve();
     req.onerror = () => reject(req.error);
   });
+
+  if (syncToCloud && cloudHook?.deleteItemAlias) {
+    cloudHook.deleteItemAlias(id).catch((e) => console.warn('Could not delete item alias from cloud:', e));
+  }
 }
 
 /**
  * Save or update learned Unit Alias
  */
-export async function saveLearnedUnitAlias(normalizedRawUnit: string, targetUnitName: string): Promise<void> {
+export async function saveLearnedUnitAlias(
+  normalizedRawUnit: string,
+  targetUnitName: string,
+  syncToCloud = true
+): Promise<void> {
   const db = await getDb();
-  return new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     const tx = db.transaction('unit_aliases', 'readwrite');
     const store = tx.objectStore('unit_aliases');
     const req = store.put({
@@ -287,6 +340,10 @@ export async function saveLearnedUnitAlias(normalizedRawUnit: string, targetUnit
     req.onsuccess = () => resolve();
     req.onerror = () => reject(req.error);
   });
+
+  if (syncToCloud && cloudHook?.pushUnitAlias) {
+    cloudHook.pushUnitAlias(normalizedRawUnit, targetUnitName).catch((e) => console.warn('Could not push unit alias to cloud:', e));
+  }
 }
 
 /**
@@ -311,15 +368,19 @@ export async function getLearnedUnitAliases(): Promise<LearnedUnitAlias[]> {
 /**
  * Delete a learned unit alias
  */
-export async function deleteLearnedUnitAlias(normalizedRawUnit: string): Promise<void> {
+export async function deleteLearnedUnitAlias(normalizedRawUnit: string, syncToCloud = true): Promise<void> {
   const db = await getDb();
-  return new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     const tx = db.transaction('unit_aliases', 'readwrite');
     const store = tx.objectStore('unit_aliases');
     const req = store.delete(normalizedRawUnit);
     req.onsuccess = () => resolve();
     req.onerror = () => reject(req.error);
   });
+
+  if (syncToCloud && cloudHook?.deleteUnitAlias) {
+    cloudHook.deleteUnitAlias(normalizedRawUnit).catch((e) => console.warn('Could not delete unit alias from cloud:', e));
+  }
 }
 
 // ---------------------- Master Data Helper Getters/Setters ----------------------
@@ -675,9 +736,9 @@ export async function saveTemplateFile(base64: string, fileName: string): Promis
 /**
  * Clear entire DB (All stores)
  */
-export async function clearEntireDatabase(): Promise<void> {
+export async function clearEntireDatabase(clearCloud = false): Promise<void> {
   const db = await getDb();
-  return new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(['master_data', 'item_aliases', 'unit_aliases', 'invoice_history'], 'readwrite');
     tx.objectStore('master_data').clear();
     tx.objectStore('item_aliases').clear();
@@ -686,6 +747,10 @@ export async function clearEntireDatabase(): Promise<void> {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
+
+  if (clearCloud && cloudHook?.clearCloud) {
+    cloudHook.clearCloud().catch((e) => console.warn('Could not clear cloud database:', e));
+  }
 }
 
 /**
@@ -745,31 +810,40 @@ export async function importAllDataFromJson(jsonStr: string): Promise<{ masterDa
 /**
  * Save review invoice snapshot in history
  */
-export async function saveInvoiceSession(session: {
-  id: string;
-  supplierName: string;
-  supplierId: string;
-  warehouseId: string;
-  invoiceNumber: string;
-  documentDate: string;
-  rows: MatchedInvoiceRow[];
-  rawInvoice: RawInvoiceData;
-  imagePreviewUrl?: string;
-  fileName?: string;
-  createdAt?: number;
-}): Promise<void> {
+export async function saveInvoiceSession(
+  session: {
+    id: string;
+    supplierName: string;
+    supplierId: string;
+    warehouseId: string;
+    invoiceNumber: string;
+    documentDate: string;
+    rows: MatchedInvoiceRow[];
+    rawInvoice: RawInvoiceData;
+    imagePreviewUrl?: string;
+    fileName?: string;
+    createdAt?: number;
+  },
+  syncToCloud = true
+): Promise<void> {
   try {
     const db = await getDb();
-    return new Promise((resolve, reject) => {
+    const cleanRecord = {
+      ...session,
+      createdAt: session.createdAt || Date.now(),
+    };
+
+    await new Promise<void>((resolve, reject) => {
       const tx = db.transaction('invoice_history', 'readwrite');
       const store = tx.objectStore('invoice_history');
-      const req = store.put({
-        ...session,
-        createdAt: session.createdAt || Date.now(),
-      });
+      const req = store.put(cleanRecord);
       req.onsuccess = () => resolve();
       req.onerror = () => reject(req.error);
     });
+
+    if (syncToCloud && cloudHook?.pushInvoice) {
+      cloudHook.pushInvoice(cleanRecord).catch((e) => console.warn('Could not auto-push invoice to cloud:', e));
+    }
   } catch (e) {
     console.warn('Failed to save invoice session to history:', e);
   }
@@ -796,3 +870,81 @@ export async function getInvoiceHistory(): Promise<any[]> {
     return [];
   }
 }
+
+/**
+ * Save Reconciliation Session to IndexedDB & optional Cloud sync
+ */
+export async function saveReconciliationSession(
+  session: ReconciliationSession,
+  syncToCloud = true
+): Promise<void> {
+  try {
+    const db = await getDb();
+    const cleanSession = JSON.parse(JSON.stringify(session));
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('reconciliation_sessions', 'readwrite');
+      const store = tx.objectStore('reconciliation_sessions');
+      const req = store.put(cleanSession);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+
+    if (syncToCloud && cloudHook?.pushReconciliation) {
+      cloudHook.pushReconciliation(cleanSession).catch((e) =>
+        console.warn('Could not auto-push reconciliation to cloud:', e)
+      );
+    }
+  } catch (e) {
+    console.warn('Failed to save reconciliation session:', e);
+  }
+}
+
+/**
+ * Get all Reconciliation Sessions
+ */
+export async function getReconciliationSessions(): Promise<ReconciliationSession[]> {
+  try {
+    const db = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('reconciliation_sessions', 'readonly');
+      const store = tx.objectStore('reconciliation_sessions');
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const results = (req.result || []) as ReconciliationSession[];
+        results.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+        resolve(results);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  } catch (e) {
+    return [];
+  }
+}
+
+/**
+ * Delete a Reconciliation Session
+ */
+export async function deleteReconciliationSession(
+  id: string,
+  syncToCloud = true
+): Promise<void> {
+  try {
+    const db = await getDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('reconciliation_sessions', 'readwrite');
+      const store = tx.objectStore('reconciliation_sessions');
+      const req = store.delete(id);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+
+    if (syncToCloud && cloudHook?.deleteReconciliation) {
+      cloudHook.deleteReconciliation(id).catch((e) =>
+        console.warn('Could not auto-delete reconciliation from cloud:', e)
+      );
+    }
+  } catch (e) {
+    console.warn('Failed to delete reconciliation session:', e);
+  }
+}
+

@@ -6,6 +6,7 @@ import {
   FileSpreadsheet,
   ScanLine,
   CheckSquare,
+  FileCheck2,
   BookOpen,
   Play,
   RotateCcw,
@@ -13,15 +14,21 @@ import {
   ArrowRight,
   Shield,
   Layers,
+  Cloud,
+  RefreshCw,
+  WifiOff,
 } from 'lucide-react';
 import { IposMasterData } from '../types';
+import { SyncInfo } from '../utils/syncService';
 
 interface NavbarProps {
   currentView: 'enduser' | 'admin';
   setCurrentView: (view: 'enduser' | 'admin') => void;
-  currentStep: 'scan' | 'review';
-  setCurrentStep: (step: 'scan' | 'review') => void;
+  currentStep: 'scan' | 'review' | 'reconcile';
+  setCurrentStep: (step: 'scan' | 'review' | 'reconcile') => void;
   masterData: IposMasterData | null;
+  syncInfo?: SyncInfo;
+  onOpenCloudSync?: () => void;
   onOpenAliasManager: () => void;
   onOpenTestRunner: () => void;
   onResetAll: () => void;
@@ -33,6 +40,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   currentStep,
   setCurrentStep,
   masterData,
+  syncInfo,
+  onOpenCloudSync,
   onOpenAliasManager,
   onOpenTestRunner,
   onResetAll,
@@ -92,6 +101,21 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <CheckSquare className="w-3.5 h-3.5" />
                 <span>2. Duyệt & Xuất Excel iPOS</span>
               </button>
+
+              <span className="text-slate-600 text-xs">→</span>
+
+              <button
+                id="nav-step-reconcile"
+                onClick={() => setCurrentStep('reconcile')}
+                className={`flex items-center space-x-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  currentStep === 'reconcile'
+                    ? 'bg-indigo-600 text-white shadow-sm font-semibold'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
+                }`}
+              >
+                <FileCheck2 className="w-3.5 h-3.5 text-indigo-300" />
+                <span>3. Đối soát Hóa đơn tự động</span>
+              </button>
             </nav>
           ) : (
             /* Admin Mode Banner */
@@ -125,6 +149,38 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             )}
+
+            <button
+              id="btn-open-cloud-sync"
+              onClick={onOpenCloudSync}
+              className={`flex items-center space-x-1.5 px-2.5 py-1.5 text-xs rounded-lg border transition-colors ${
+                syncInfo?.state === 'syncing'
+                  ? 'bg-amber-950/60 text-amber-300 border-amber-700/60 hover:bg-amber-900/60'
+                  : syncInfo?.state === 'synced'
+                  ? 'bg-emerald-950/50 text-emerald-300 border-emerald-700/50 hover:bg-emerald-900/60'
+                  : syncInfo?.state === 'offline'
+                  ? 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
+                  : 'bg-slate-800 text-slate-300 border-slate-700/60 hover:bg-slate-700 hover:text-white'
+              }`}
+              title="Xem và quản lý đồng bộ đám mây (Cloud Sync)"
+            >
+              {syncInfo?.state === 'syncing' ? (
+                <RefreshCw className="w-3.5 h-3.5 text-amber-400 animate-spin" />
+              ) : syncInfo?.state === 'offline' ? (
+                <WifiOff className="w-3.5 h-3.5 text-slate-400" />
+              ) : (
+                <Cloud className="w-3.5 h-3.5 text-emerald-400" />
+              )}
+              <span className="hidden sm:inline">
+                {syncInfo?.state === 'syncing'
+                  ? 'Đang đồng bộ...'
+                  : syncInfo?.state === 'synced'
+                  ? 'Cloud: Đã đồng bộ'
+                  : syncInfo?.state === 'offline'
+                  ? 'Ngoại tuyến'
+                  : 'Cloud Sync'}
+              </span>
+            </button>
 
             <button
               id="btn-open-aliases"
@@ -188,13 +244,24 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
 
           <div className="flex items-center space-x-2 text-[11px]">
-            {hasMasterData ? (
+            {syncInfo?.state === 'synced' ? (
+              <button
+                onClick={onOpenCloudSync}
+                className="inline-flex items-center text-emerald-400 hover:underline cursor-pointer"
+              >
+                <Cloud className="w-3 h-3 mr-1 text-emerald-400" /> Cloud Firestore: Đã đồng bộ (Shared Store)
+              </button>
+            ) : syncInfo?.state === 'syncing' ? (
+              <span className="inline-flex items-center text-amber-400">
+                <RefreshCw className="w-3 h-3 mr-1 animate-spin" /> Đang đồng bộ Cloud...
+              </span>
+            ) : hasMasterData ? (
               <span className="inline-flex items-center text-emerald-400">
-                <CheckCircle2 className="w-3 h-3 mr-1" /> Dữ liệu đã lưu trong IndexedDB
+                <CheckCircle2 className="w-3 h-3 mr-1" /> Dữ liệu đã lưu cục bộ (IndexedDB)
               </span>
             ) : (
               <span className="inline-flex items-center text-amber-400">
-                <AlertTriangle className="w-3 h-3 mr-1" /> DB trống (Tải file Excel để nạp)
+                <AlertTriangle className="w-3 h-3 mr-1" /> DB trống (Tải file Excel để nạp hoặc kéo từ Cloud)
               </span>
             )}
           </div>

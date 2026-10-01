@@ -2,81 +2,110 @@ import React, { useState, useRef } from 'react';
 import {
   Upload,
   FileText,
-  Image as ImageIcon,
-  ScanLine,
   Sparkles,
-  RefreshCw,
   AlertCircle,
   CheckCircle2,
-  Building2,
+  Trash2,
+  Plus,
+  Loader2,
+  Eye,
+  X,
+  Layers,
+  Building,
   Warehouse,
   Calendar,
-  Hash,
-  ZoomIn,
-  ZoomOut,
-  Maximize2,
-  FileCheck,
-  Eye,
+  Image as ImageIcon,
+  Check,
+  RefreshCw,
 } from 'lucide-react';
-import { IposMasterData, RawInvoiceData } from '../types';
-import { SAMPLE_INVOICE_PRESETS } from '../data/mockData';
+import {
+  InvoiceDocumentSession,
+  InvoiceImageItem,
+  IposMasterData,
+  LearnedItemAlias,
+  LearnedUnitAlias,
+  RawInvoiceData,
+} from '../types';
+import { compressImageIfNeeded, groupExtractedInvoices } from '../utils/invoiceGrouper';
 
 interface ScanScreenProps {
   masterData: IposMasterData | null;
-  onInvoiceExtracted: (
-    rawInvoice: RawInvoiceData,
-    meta: {
-      supplierId: string;
-      supplierName: string;
-      warehouseId: string;
-      warehouseName: string;
-      documentDate: string;
-      invoiceNumber: string;
-      imagePreviewUrl?: string;
-      fileName?: string;
-    }
-  ) => void;
+  learnedAliases?: LearnedItemAlias[];
+  learnedUnitAliases?: LearnedUnitAlias[];
+  onInvoicesExtracted: (invoices: InvoiceDocumentSession[]) => void;
   onGotoAdmin: () => void;
+}
+
+interface SelectedUploadFile {
+  id: string;
+  file: File;
+  previewUrl: string;
+  isPdf: boolean;
+  status: 'pending' | 'scanning' | 'done' | 'error';
+  errorMsg?: string;
+  extractedData?: RawInvoiceData;
 }
 
 export const ScanScreen: React.FC<ScanScreenProps> = ({
   masterData,
-  onInvoiceExtracted,
+  learnedAliases = [],
+  learnedUnitAliases = [],
+  onInvoicesExtracted,
   onGotoAdmin,
 }) => {
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [isPdf, setIsPdf] = useState(false);
+  const [fileList, setFileList] = useState<SelectedUploadFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isBatchProcessing, setIsBatchProcessing] = useState(false);
+  const [currentScanIndex, setCurrentScanIndex] = useState<number>(0);
+  const [scanProgressPercent, setScanProgressPercent] = useState<number>(0);
+  const [generalError, setGeneralError] = useState<string | null>(null);
 
-  // Invoice Form State
-  const [selectedSupplierId, setSelectedSupplierId] = useState<string>('');
-  const [customSupplierName, setCustomSupplierName] = useState<string>('');
+  // Form options applied to invoices if user desires
   const [selectedWarehouseId, setSelectedWarehouseId] = useState<string>(
-    masterData?.warehouses?.[0]?.warehouseId || ''
+    masterData?.warehouses?.[0]?.warehouseId || 'KHO_TONG'
   );
-  const [documentDate, setDocumentDate] = useState<string>(
-    new Date().toISOString().slice(0, 10)
-  );
-  const [invoiceNumber, setInvoiceNumber] = useState<string>('');
-  const [zoomLevel, setZoomLevel] = useState<number>(100);
+  const [selectedSupplierId, setSelectedSupplierId] = useState<string>('');
+
+  // Image Lightbox
+  const [previewModalUrl, setPreviewModalUrl] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFileChange = (file: File) => {
-    setErrorMessage(null);
-    setSelectedFile(file);
+  // Add files to list
+  const handleAddFiles = async (files: FileList | File[]) => {
+    setGeneralError(null);
+    const newItems: SelectedUploadFile[] = [];
 
-    const isPdfFile = file.type === 'application/pdf' || file.name.endsWith('.pdf');
-    setIsPdf(isPdfFile);
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setPreviewUrl(e.target?.result as string);
-    };
-    reader.readAsDataURL(file);
+      try {
+        const compressedBase64 = await compressImageIfNeeded(file);
+        newItems.push({
+          id: `file_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+          file,
+          previewUrl: compressedBase64,
+          isPdf,
+          status: 'pending',
+        });
+      } catch (e) {
+        console.warn('Image processing error:', e);
+      }
+    }
+
+    if (newItems.length > 0) {
+      setFileList((prev) => [...prev, ...newItems]);
+    }
+  };
+
+  const handleRemoveFile = (id: string) => {
+    setFileList((prev) => prev.filter((f) => f.id !== id));
+  };
+
+  const handleClearAll = () => {
+    setFileList([]);
+    setGeneralError(null);
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -92,121 +121,305 @@ export const ScanScreen: React.FC<ScanScreenProps> = ({
     e.preventDefault();
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleFileChange(e.dataTransfer.files[0]);
+      handleAddFiles(e.dataTransfer.files);
     }
   };
 
-  const handleLoadPreset = (presetId: string) => {
-    const preset = SAMPLE_INVOICE_PRESETS.find((p) => p.id === presetId);
-    if (!preset) return;
-
-    setSelectedSupplierId(preset.supplierId);
-    setSelectedWarehouseId(preset.warehouseId);
-    setDocumentDate(preset.documentDate);
-    setInvoiceNumber(preset.invoiceNumber);
-
-    // Call extraction completion directly with pre-structured mock invoice
-    const supplierObj = masterData?.suppliers?.find((s) => s.supplierId === preset.supplierId);
-    const warehouseObj = masterData?.warehouses?.find((w) => w.warehouseId === preset.warehouseId);
-
-    onInvoiceExtracted(preset.rawInvoice, {
-      supplierId: preset.supplierId,
-      supplierName: supplierObj?.supplierName || preset.supplierName,
-      warehouseId: preset.warehouseId,
-      warehouseName: warehouseObj?.warehouseName || 'Kho Bếp Nóng',
-      documentDate: preset.documentDate,
-      invoiceNumber: preset.invoiceNumber,
-      fileName: `${preset.name}.jpg`,
-    });
-  };
-
-  const handleExtractWithGemini = async () => {
-    if (!previewUrl) {
-      setErrorMessage('Vui lòng chọn hoặc kéo thả ảnh/PDF hóa đơn.');
+  // Run batch extraction with Gemini AI sequentially
+  const handleStartBatchExtraction = async () => {
+    if (fileList.length === 0) {
+      setGeneralError('Vui lòng chọn ít nhất một ảnh hoặc file hóa đơn.');
       return;
     }
 
-    setIsProcessing(true);
-    setErrorMessage(null);
+    setIsBatchProcessing(true);
+    setGeneralError(null);
 
-    try {
-      const response = await fetch('/api/extract-invoice', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageBase64: previewUrl,
-          mimeType: selectedFile?.type || 'image/jpeg',
-          fileName: selectedFile?.name || 'invoice_upload.jpg',
-        }),
-      });
+    const pendingFiles = [...fileList];
+    const extractedResults: Array<{
+      image: InvoiceImageItem;
+      rawInvoice: RawInvoiceData;
+    }> = [];
 
-      const result = await response.json();
+    let successCount = 0;
 
-      if (!response.ok || !result.success) {
-        throw new Error(result.error || 'Không thể trích xuất hóa đơn qua Gemini AI.');
-      }
+    for (let i = 0; i < pendingFiles.length; i++) {
+      const item = pendingFiles[i];
+      setCurrentScanIndex(i + 1);
+      setScanProgressPercent(Math.round(((i) / pendingFiles.length) * 100));
 
-      const extractedData: RawInvoiceData = result.data;
+      // Mark current item as scanning
+      setFileList((prev) =>
+        prev.map((f) => (f.id === item.id ? { ...f, status: 'scanning', errorMsg: undefined } : f))
+      );
 
-      // Auto-detect or resolve supplier & date if present
-      let finalSupplierId = selectedSupplierId;
-      let finalSupplierName = customSupplierName;
+      try {
+        const response = await fetch('/api/extract-invoice', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            imageBase64: item.previewUrl,
+            mimeType: item.file.type || 'image/jpeg',
+            fileName: item.file.name,
+          }),
+        });
 
-      if (!finalSupplierId && extractedData.supplier_raw_name) {
-        const found = masterData?.suppliers?.find(
-          (s) =>
-            s.supplierName.toLowerCase().includes(extractedData.supplier_raw_name!.toLowerCase()) ||
-            extractedData.supplier_raw_name!.toLowerCase().includes(s.supplierName.toLowerCase())
-        );
-        if (found) {
-          finalSupplierId = found.supplierId;
-          finalSupplierName = found.supplierName;
-        } else {
-          finalSupplierName = extractedData.supplier_raw_name;
+        const result = await response.json();
+
+        if (!response.ok || !result.success) {
+          throw new Error(result.error || 'Gemini không trích xuất được dữ liệu.');
         }
-      } else if (finalSupplierId) {
-        const found = masterData?.suppliers?.find((s) => s.supplierId === finalSupplierId);
-        if (found) finalSupplierName = found.supplierName;
+
+        const rawData: RawInvoiceData = result.data;
+
+        // Update item in state
+        setFileList((prev) =>
+          prev.map((f) => (f.id === item.id ? { ...f, status: 'done', extractedData: rawData } : f))
+        );
+
+        extractedResults.push({
+          image: {
+            id: item.id,
+            fileName: item.file.name,
+            previewUrl: item.previewUrl,
+            fileType: item.file.type,
+            fileSize: item.file.size,
+          },
+          rawInvoice: rawData,
+        });
+
+        successCount++;
+      } catch (err: any) {
+        console.error(`Error scanning file ${item.file.name}:`, err);
+        setFileList((prev) =>
+          prev.map((f) =>
+            f.id === item.id ? { ...f, status: 'error', errorMsg: err.message || 'Lỗi quét AI' } : f
+          )
+        );
       }
 
-      const finalDate = extractedData.document_date || documentDate;
-      const finalInvoiceNo = extractedData.invoice_number || invoiceNumber;
-      const warehouseObj = masterData?.warehouses?.find((w) => w.warehouseId === selectedWarehouseId);
-
-      onInvoiceExtracted(extractedData, {
-        supplierId: finalSupplierId,
-        supplierName: finalSupplierName || 'Nhà cung cấp chưa đặt tên',
-        warehouseId: selectedWarehouseId,
-        warehouseName: warehouseObj?.warehouseName || 'Kho Tổng',
-        documentDate: finalDate,
-        invoiceNumber: finalInvoiceNo,
-        imagePreviewUrl: previewUrl,
-        fileName: selectedFile?.name,
-      });
-    } catch (err: any) {
-      console.error('Extraction error:', err);
-      setErrorMessage(err.message || 'Lỗi kết nối máy chủ Gemini AI');
-    } finally {
-      setIsProcessing(false);
+      // Small pause between items to prevent API rate spikes
+      if (i < pendingFiles.length - 1) {
+        await new Promise((r) => setTimeout(r, 400));
+      }
     }
+
+    setScanProgressPercent(100);
+    setIsBatchProcessing(false);
+
+    if (extractedResults.length === 0) {
+      setGeneralError('Không trích xuất được nội dung từ các ảnh đã chọn. Vui lòng thử lại với ảnh rõ nét hơn.');
+      return;
+    }
+
+    // Resolve default warehouse
+    const whObj = masterData?.warehouses?.find((w) => w.warehouseId === selectedWarehouseId);
+    const defaultWhName = whObj ? whObj.warehouseName : 'Kho Tổng Trung Tâm';
+
+    // Group scanned results into InvoiceDocumentSession[]
+    const groupedSessions = groupExtractedInvoices(
+      extractedResults,
+      selectedWarehouseId,
+      defaultWhName,
+      masterData,
+      learnedAliases,
+      learnedUnitAliases,
+      selectedSupplierId
+    );
+
+    // Transition to review screen
+    onInvoicesExtracted(groupedSessions);
+  };
+
+  // Quick 1-Click Multi-Invoice Demonstration Preset
+  const handleLoadMultiInvoiceSample = () => {
+    const defaultWh = masterData?.warehouses?.[0]?.warehouseId || 'KHO_TONG';
+    const defaultWhName = masterData?.warehouses?.[0]?.warehouseName || 'Kho Tổng Trung Tâm';
+
+    const dummyResults: Array<{
+      image: InvoiceImageItem;
+      rawInvoice: RawInvoiceData;
+    }> = [
+      // Invoice 1: Rau Củ Quả Đà Lạt (2 ảnh cùng 1 hóa đơn)
+      {
+        image: {
+          id: 'demo_img_1a',
+          fileName: 'hoa_don_rau_cu_trang1.jpg',
+          previewUrl: 'https://images.unsplash.com/photo-1540420773420-3366772f4999?w=600&auto=format&fit=crop&q=80',
+        },
+        rawInvoice: {
+          supplier_raw_name: 'HỢP TÁC XÃ RAU SẠCH ĐÀ LẠT',
+          document_date: new Date().toISOString().slice(0, 10),
+          invoice_number: 'HD-RAU-2025/089',
+          note: 'Trang 1 - Rau củ tươi nhập sáng',
+          rows: [
+            {
+              line_no: 1,
+              raw_item_name: 'Cà chua Đà Lạt chọn lọc',
+              raw_unit: 'Kg',
+              quantity: 15,
+              price: 25000,
+              amount: 375000,
+              visual_certainty: 'high',
+              needs_review: false,
+              review_reason: null,
+            },
+            {
+              line_no: 2,
+              raw_item_name: 'Khoai tây vàng Đà Lạt',
+              raw_unit: 'Kg',
+              quantity: 20,
+              price: 32000,
+              amount: 640000,
+              visual_certainty: 'high',
+              needs_review: false,
+              review_reason: null,
+            },
+          ],
+        },
+      },
+      {
+        image: {
+          id: 'demo_img_1b',
+          fileName: 'hoa_don_rau_cu_trang2.jpg',
+          previewUrl: 'https://images.unsplash.com/photo-1597362925123-77861d3fbac7?w=600&auto=format&fit=crop&q=80',
+        },
+        rawInvoice: {
+          supplier_raw_name: 'HỢP TÁC XÃ RAU SẠCH ĐÀ LẠT',
+          document_date: new Date().toISOString().slice(0, 10),
+          invoice_number: 'HD-RAU-2025/089',
+          note: 'Trang 2 - Gia vị và hành ngò',
+          rows: [
+            {
+              line_no: 3,
+              raw_item_name: 'Hành lá tươi',
+              raw_unit: 'Kg',
+              quantity: 3,
+              price: 45000,
+              amount: 135000,
+              visual_certainty: 'high',
+              needs_review: false,
+              review_reason: null,
+            },
+            {
+              line_no: 4,
+              raw_item_name: 'Chanh tươi không hạt',
+              raw_unit: 'Kg',
+              quantity: 5,
+              price: 35000,
+              amount: 175000,
+              visual_certainty: 'high',
+              needs_review: false,
+              review_reason: null,
+            },
+          ],
+        },
+      },
+      // Invoice 2: Đồ uống Giải khát Coca-Cola (Hóa đơn độc lập)
+      {
+        image: {
+          id: 'demo_img_2',
+          fileName: 'phieu_giao_hang_nuoc_ngot.jpg',
+          previewUrl: 'https://images.unsplash.com/photo-1622483767028-3f66f32aef97?w=600&auto=format&fit=crop&q=80',
+        },
+        rawInvoice: {
+          supplier_raw_name: 'CÔNG TY TNHH NGK COCA-COLA VIỆT NAM',
+          document_date: new Date().toISOString().slice(0, 10),
+          invoice_number: 'CC-094125',
+          note: 'Giao đợt 1 quầy bar',
+          rows: [
+            {
+              line_no: 1,
+              raw_item_name: 'Coca Cola lon 330ml (Thùng 24)',
+              raw_unit: 'Thùng',
+              quantity: 10,
+              price: 210000,
+              amount: 2100000,
+              visual_certainty: 'high',
+              needs_review: false,
+              review_reason: null,
+            },
+            {
+              line_no: 2,
+              raw_item_name: 'Nước suối Dasani 500ml',
+              raw_unit: 'Thùng',
+              quantity: 15,
+              price: 95000,
+              amount: 1425000,
+              visual_certainty: 'high',
+              needs_review: false,
+              review_reason: null,
+            },
+          ],
+        },
+      },
+      // Invoice 3: Thịt tươi sống MEATDeli (Hóa đơn độc lập)
+      {
+        image: {
+          id: 'demo_img_3',
+          fileName: 'phieu_nhap_thit_meatdeli.jpg',
+          previewUrl: 'https://images.unsplash.com/photo-1603048588665-791ca8aea617?w=600&auto=format&fit=crop&q=80',
+        },
+        rawInvoice: {
+          supplier_raw_name: 'CÔNG TY CỔ PHẦN MEATDELI',
+          document_date: new Date().toISOString().slice(0, 10),
+          invoice_number: 'MD-882194',
+          note: 'Thịt tươi mát buổi sáng',
+          rows: [
+            {
+              line_no: 1,
+              raw_item_name: 'Thịt ba rọi heo sạch',
+              raw_unit: 'Kg',
+              quantity: 12.5,
+              price: 145000,
+              amount: 1812500,
+              visual_certainty: 'high',
+              needs_review: false,
+              review_reason: null,
+            },
+            {
+              line_no: 2,
+              raw_item_name: 'Nạc vai heo tươi',
+              raw_unit: 'Kg',
+              quantity: 8,
+              price: 125000,
+              amount: 1000000,
+              visual_certainty: 'high',
+              needs_review: false,
+              review_reason: null,
+            },
+          ],
+        },
+      },
+    ];
+
+    const grouped = groupExtractedInvoices(
+      dummyResults,
+      defaultWh,
+      defaultWhName,
+      masterData,
+      learnedAliases,
+      learnedUnitAliases
+    );
+
+    onInvoicesExtracted(grouped);
   };
 
   const hasMasterData = (masterData?.items?.length || 0) > 0;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
-      {/* Missing Master Data Alert */}
+      {/* Missing Master Data Warning */}
       {!hasMasterData && (
         <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
           <div className="flex items-center space-x-3 text-amber-800 text-sm">
             <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
             <div>
               <strong>Cơ sở dữ liệu iPOS đang trống (0 mặt hàng):</strong> Hãy chuyển sang màn hình{' '}
-              <span className="font-semibold text-amber-900">Quản trị CSDL (Admin)</span> để tải lên các file Excel danh mục hàng hóa iPOS (<code>FILE_NHAP_MAU_NHAP_MUA_HANG.xlsx</code>, <code>Danh sách hàng hoá.xlsx</code>, v.v.).
+              <span className="font-semibold text-amber-900">Quản trị CSDL (Admin)</span> để nạp danh mục hàng hóa iPOS.
             </div>
           </div>
           <button
-            id="btn-goto-admin-from-scan"
             onClick={onGotoAdmin}
             className="flex items-center space-x-2 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold shrink-0 shadow-sm transition-all"
           >
@@ -215,168 +428,203 @@ export const ScanScreen: React.FC<ScanScreenProps> = ({
         </div>
       )}
 
-      {/* Preset Quick Tests Bar */}
-      <div className="bg-slate-900 text-white p-4 rounded-2xl border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center space-x-2 text-xs font-semibold text-emerald-400 uppercase tracking-wider">
-            <Sparkles className="w-4 h-4" />
-            <span>Mẫu hóa đơn kiểm thử nhanh (1-Click Test)</span>
+      {/* Quick Test Bar */}
+      <div className="bg-slate-900 text-white p-4 rounded-2xl border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm">
+        <div className="space-y-0.5">
+          <div className="flex items-center space-x-2">
+            <Sparkles className="w-4 h-4 text-emerald-400" />
+            <span className="font-bold text-sm">Thử nghiệm nhanh tính năng Đa Hóa Đơn:</span>
           </div>
-          <p className="text-xs text-slate-300 mt-0.5">
-            Thử nghiệm trực tiếp các tình huống chữ viết tay, số lượng lẻ 2,5 kg và cảnh báo iPOS mà không cần tải ảnh.
+          <p className="text-xs text-slate-400">
+            Trải nghiệm tải 4 ảnh tự động gom thành 3 hóa đơn độc lập, duyệt thông tin và tải Excel/ZIP.
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          {SAMPLE_INVOICE_PRESETS.map((preset) => (
-            <button
-              key={preset.id}
-              onClick={() => handleLoadPreset(preset.id)}
-              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs font-medium text-slate-200 transition-all flex items-center space-x-2 shadow-2xs hover:border-emerald-500/50"
-            >
-              <FileCheck className="w-3.5 h-3.5 text-emerald-400" />
-              <span>{preset.name}</span>
-            </button>
-          ))}
-        </div>
+        <button
+          type="button"
+          onClick={handleLoadMultiInvoiceSample}
+          className="flex items-center space-x-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl shadow-xs transition-all shrink-0"
+        >
+          <Layers className="w-4 h-4" />
+          <span>Nạp mẫu thử 3 hóa đơn tự động</span>
+        </button>
       </div>
 
-      {/* Main Two-Column Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* Left Column: Document Uploader & Preview (7 cols) */}
-        <div className="lg:col-span-7 space-y-4">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
-              <div className="flex items-center space-x-2">
-                <ImageIcon className="w-4 h-4 text-slate-600" />
-                <h3 className="text-sm font-semibold text-slate-800">Ảnh chụp / PDF hóa đơn gốc</h3>
+      {/* Main Upload Zone and Configuration */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Left Column: Upload Dropzone & Thumbnails (8 Cols) */}
+        <div className="lg:col-span-8 space-y-4">
+          <div
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className={`border-2 border-dashed rounded-3xl p-8 text-center transition-all bg-white relative ${
+              isDragging
+                ? 'border-emerald-500 bg-emerald-50/50 scale-[1.005]'
+                : 'border-slate-300 hover:border-slate-400 shadow-sm'
+            }`}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/*,application/pdf"
+              onChange={(e) => e.target.files && handleAddFiles(e.target.files)}
+              className="hidden"
+            />
+
+            <div className="max-w-md mx-auto space-y-4">
+              <div className="w-16 h-16 rounded-2xl bg-emerald-100 text-emerald-600 mx-auto flex items-center justify-center shadow-xs">
+                <Upload className="w-8 h-8" />
               </div>
 
-              {previewUrl && (
-                <div className="flex items-center space-x-1 bg-white border border-slate-200 rounded-lg p-1 text-xs">
-                  <button
-                    onClick={() => setZoomLevel((z) => Math.max(50, z - 20))}
-                    className="p-1 text-slate-600 hover:text-slate-900 rounded"
-                    title="Thu nhỏ"
-                  >
-                    <ZoomOut className="w-3.5 h-3.5" />
-                  </button>
-                  <span className="px-1 text-[11px] font-mono text-slate-500">{zoomLevel}%</span>
-                  <button
-                    onClick={() => setZoomLevel((z) => Math.min(200, z + 20))}
-                    className="p-1 text-slate-600 hover:text-slate-900 rounded"
-                    title="Phóng to"
-                  >
-                    <ZoomIn className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() => setZoomLevel(100)}
-                    className="p-1 text-slate-600 hover:text-slate-900 rounded"
-                    title="Kích thước gốc"
-                  >
-                    <Maximize2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              )}
-            </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  Kéo thả nhiều ảnh hóa đơn hoặc click để chọn file
+                </h3>
+                <p className="text-xs text-slate-500 mt-1">
+                  Hỗ trợ tải lên cùng lúc nhiều ảnh chụp, hóa đơn viết tay, phiếu giao hàng (PNG, JPG, PDF). AI sẽ tự động phân loại theo từng hóa đơn.
+                </p>
+              </div>
 
-            {/* Document Viewer / Drop Zone */}
-            <div className="p-4 bg-slate-100/50 min-h-[420px] flex items-center justify-center">
-              {previewUrl ? (
-                <div className="w-full h-[500px] overflow-auto flex items-center justify-center p-2 rounded-xl bg-white border border-slate-200">
-                  {isPdf ? (
-                    <embed
-                      src={previewUrl}
-                      type="application/pdf"
-                      className="w-full h-full rounded-lg"
-                    />
-                  ) : (
-                    <img
-                      src={previewUrl}
-                      alt="Hóa đơn tải lên"
-                      style={{ transform: `scale(${zoomLevel / 100})`, transformOrigin: 'center center' }}
-                      className="max-w-full max-h-full object-contain rounded-lg shadow-sm transition-transform"
-                    />
-                  )}
-                </div>
-              ) : (
-                <div
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
-                  onClick={() => fileInputRef.current?.click()}
-                  className={`w-full h-[400px] border-2 border-dashed rounded-2xl flex flex-col items-center justify-center p-8 text-center cursor-pointer transition-all ${
-                    isDragging
-                      ? 'border-emerald-500 bg-emerald-50/50 scale-[1.01]'
-                      : 'border-slate-300 bg-white hover:border-slate-400 hover:bg-slate-50/50'
-                  }`}
-                >
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/jpeg,image/png,image/jpg,application/pdf"
-                    onChange={(e) => e.target.files && handleFileChange(e.target.files[0])}
-                    className="hidden"
-                  />
-                  <div className="w-16 h-16 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center shadow-inner mb-4">
-                    <Upload className="w-8 h-8" />
-                  </div>
-                  <h4 className="text-base font-semibold text-slate-800">
-                    Kéo thả hoặc click để chọn ảnh/PDF hóa đơn
-                  </h4>
-                  <p className="text-xs text-slate-500 mt-1 max-w-sm">
-                    Hỗ trợ định dạng JPG, JPEG, PNG, PDF. Đảm bảo chữ viết tay hoặc chữ in không bị lóa sáng.
-                  </p>
-                  <span className="mt-4 px-4 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium rounded-xl border border-slate-300/80 transition-colors">
-                    Chọn tệp từ máy tính
-                  </span>
-                </div>
-              )}
-            </div>
-
-            {previewUrl && (
-              <div className="p-3 bg-white border-t border-slate-200 flex items-center justify-between text-xs text-slate-500">
-                <div className="flex items-center space-x-2 truncate">
-                  <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span className="truncate font-medium text-slate-700">
-                    {selectedFile?.name || 'Ảnh hóa đơn được tải lên'}
-                  </span>
-                </div>
+              <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
                 <button
-                  onClick={() => {
-                    setSelectedFile(null);
-                    setPreviewUrl(null);
-                  }}
-                  className="text-xs text-rose-600 hover:text-rose-700 font-medium ml-4 shrink-0"
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl shadow-xs transition-all"
                 >
-                  Đổi ảnh khác
+                  Chọn các file ảnh từ máy tính
                 </button>
               </div>
-            )}
+            </div>
           </div>
+
+          {/* Selected Files Gallery */}
+          {fileList.length > 0 && (
+            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <ImageIcon className="w-4 h-4 text-emerald-600" />
+                  <h4 className="text-sm font-bold text-slate-900">
+                    Danh sách ảnh đã chọn ({fileList.length} ảnh)
+                  </h4>
+                </div>
+
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex items-center space-x-1 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Thêm ảnh khác</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleClearAll}
+                    className="flex items-center space-x-1 px-3 py-1.5 text-rose-600 hover:bg-rose-50 text-xs font-semibold rounded-lg transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Xóa tất cả</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Thumbnails Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                {fileList.map((item, idx) => (
+                  <div
+                    key={item.id}
+                    className="relative group bg-slate-50 border border-slate-200 rounded-xl p-2 flex flex-col justify-between overflow-hidden shadow-2xs hover:border-slate-300 transition-all"
+                  >
+                    {/* Thumbnail */}
+                    <div className="relative aspect-4/3 bg-slate-200 rounded-lg overflow-hidden flex items-center justify-center">
+                      {item.isPdf ? (
+                        <FileText className="w-8 h-8 text-slate-400" />
+                      ) : (
+                        <img
+                          src={item.previewUrl}
+                          alt={item.file.name}
+                          className="w-full h-full object-cover cursor-pointer hover:scale-105 transition-transform"
+                          onClick={() => setPreviewModalUrl(item.previewUrl)}
+                        />
+                      )}
+
+                      {/* Status Overlay */}
+                      {item.status === 'scanning' && (
+                        <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-2xs flex flex-col items-center justify-center text-white text-xs">
+                          <Loader2 className="w-5 h-5 animate-spin text-emerald-400 mb-1" />
+                          <span>Đang quét...</span>
+                        </div>
+                      )}
+
+                      {item.status === 'done' && (
+                        <div className="absolute top-1 right-1 p-1 bg-emerald-600 text-white rounded-full shadow-xs">
+                          <Check className="w-3 h-3" />
+                        </div>
+                      )}
+
+                      {item.status === 'error' && (
+                        <div className="absolute top-1 right-1 p-1 bg-rose-600 text-white rounded-full shadow-xs">
+                          <AlertCircle className="w-3 h-3" />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* File Name & Remove */}
+                    <div className="mt-2 flex items-center justify-between text-[11px]">
+                      <span className="font-medium text-slate-700 truncate max-w-[100px]" title={item.file.name}>
+                        #{idx + 1}. {item.file.name}
+                      </span>
+                      {!isBatchProcessing && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveFile(item.id)}
+                          className="text-slate-400 hover:text-rose-600 p-0.5 rounded"
+                          title="Xóa ảnh này"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Error Message */}
+          {generalError && (
+            <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-start space-x-3 text-xs text-rose-800">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+              <div>
+                <strong>Lỗi xử lý:</strong> {generalError}
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Right Column: Invoice Metadata & Extraction Control (5 cols) */}
-        <div className="lg:col-span-5 space-y-6">
-          <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm space-y-5">
+        {/* Right Column: Settings & Launch Batch Action (4 Cols) */}
+        <div className="lg:col-span-4 space-y-4">
+          <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm space-y-5">
             <div>
-              <h3 className="text-base font-bold text-slate-900">Thông tin chứng từ nhập mua</h3>
+              <h3 className="text-sm font-bold text-slate-900">Thiết lập nhập hàng iPOS</h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                Cấu hình kho nhập và nhà cung cấp để gán mã chứng từ iPOS chuẩn xác.
+                Các cấu hình mặc định sẽ được áp dụng nếu trên hóa đơn không ghi rõ.
               </p>
             </div>
 
-            {/* Warehouse Selector (Required) */}
+            {/* Warehouse Select */}
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-slate-700 flex items-center space-x-1.5">
                 <Warehouse className="w-3.5 h-3.5 text-indigo-600" />
-                <span>Kho nhập hàng iPOS (*)</span>
+                <span>Kho nhập hàng mặc định (*)</span>
               </label>
               <select
-                id="select-warehouse"
                 value={selectedWarehouseId}
                 onChange={(e) => setSelectedWarehouseId(e.target.value)}
-                className="w-full px-3.5 py-2.5 bg-white text-xs font-medium text-slate-800 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
               >
                 {masterData?.warehouses && masterData.warehouses.length > 0 ? (
                   masterData.warehouses.map((wh) => (
@@ -390,121 +638,102 @@ export const ScanScreen: React.FC<ScanScreenProps> = ({
               </select>
             </div>
 
-            {/* Supplier Selector */}
+            {/* Supplier Select (Optional override) */}
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-slate-700 flex items-center space-x-1.5">
-                <Building2 className="w-3.5 h-3.5 text-blue-600" />
-                <span>Nhà cung cấp (Tùy chọn hoặc để AI tự đọc)</span>
+                <Building className="w-3.5 h-3.5 text-blue-600" />
+                <span>Nhà cung cấp (Tùy chọn)</span>
               </label>
               <select
-                id="select-supplier"
                 value={selectedSupplierId}
-                onChange={(e) => {
-                  setSelectedSupplierId(e.target.value);
-                  if (e.target.value) {
-                    const supp = masterData?.suppliers?.find((s) => s.supplierId === e.target.value);
-                    if (supp) setCustomSupplierName(supp.supplierName);
-                  }
-                }}
-                className="w-full px-3.5 py-2.5 bg-white text-xs font-medium text-slate-800 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+                onChange={(e) => setSelectedSupplierId(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
               >
-                <option value="">-- Để Gemini AI tự động nhận diện tên NCC --</option>
+                <option value="">-- Để AI tự nhận diện từ từng ảnh --</option>
                 {masterData?.suppliers?.map((s) => (
                   <option key={s.supplierId} value={s.supplierId}>
                     [{s.supplierId}] {s.supplierName}
                   </option>
                 ))}
               </select>
+              <p className="text-[11px] text-slate-400">
+                Nếu để trống, AI sẽ tự động đọc tên và số hóa đơn trên từng ảnh để phân loại và ghép nhà cung cấp tương ứng.
+              </p>
             </div>
 
-            {/* Document Date & Invoice No */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 flex items-center space-x-1.5">
-                  <Calendar className="w-3.5 h-3.5 text-slate-500" />
-                  <span>Ngày chứng từ</span>
-                </label>
-                <input
-                  id="input-doc-date"
-                  type="date"
-                  value={documentDate}
-                  onChange={(e) => setDocumentDate(e.target.value)}
-                  className="w-full px-3 py-2 bg-white text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 flex items-center space-x-1.5">
-                  <Hash className="w-3.5 h-3.5 text-slate-500" />
-                  <span>Số hóa đơn / Phiếu</span>
-                </label>
-                <input
-                  id="input-invoice-number"
-                  type="text"
-                  placeholder="VD: GH-2025/01"
-                  value={invoiceNumber}
-                  onChange={(e) => setInvoiceNumber(e.target.value)}
-                  className="w-full px-3 py-2 bg-white text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
-                />
-              </div>
-            </div>
-
-            {/* Error Message */}
-            {errorMessage && (
-              <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 space-y-2">
-                <div className="flex items-start space-x-2">
-                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                  <div className="flex-1 leading-relaxed">{errorMessage}</div>
+            {/* Batch Progress Bar during extraction */}
+            {isBatchProcessing && (
+              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl space-y-2 animate-fade-in">
+                <div className="flex items-center justify-between text-xs font-bold text-emerald-900">
+                  <span className="flex items-center space-x-1.5">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+                    <span>Đang quét ảnh {currentScanIndex} / {fileList.length}...</span>
+                  </span>
+                  <span>{scanProgressPercent}%</span>
                 </div>
-                <div className="flex items-center justify-end space-x-2 pt-1 border-t border-rose-200/60">
-                  <button
-                    type="button"
-                    onClick={handleExtractWithGemini}
-                    disabled={isProcessing || !previewUrl}
-                    className="px-3 py-1 bg-rose-600 hover:bg-rose-700 text-white font-medium rounded-lg text-xs transition-colors flex items-center space-x-1 shadow-2xs"
-                  >
-                    <RefreshCw className={`w-3 h-3 ${isProcessing ? 'animate-spin' : ''}`} />
-                    <span>Thử lại ngay</span>
-                  </button>
+
+                <div className="w-full bg-emerald-200 rounded-full h-2 overflow-hidden">
+                  <div
+                    className="bg-emerald-600 h-2 rounded-full transition-all duration-300"
+                    style={{ width: `${scanProgressPercent}%` }}
+                  ></div>
                 </div>
+
+                <p className="text-[11px] text-emerald-700">
+                  Gemini AI đang nhận diện chi tiết từng dòng mặt hàng và đối chiếu mã iPOS...
+                </p>
               </div>
             )}
 
-            {/* Primary Action Button */}
+            {/* Launch Batch Scan Button */}
             <button
-              id="btn-extract-gemini"
-              onClick={handleExtractWithGemini}
-              disabled={isProcessing || !previewUrl}
-              className={`w-full py-3.5 px-4 rounded-xl text-sm font-bold flex items-center justify-center space-x-2 transition-all shadow-md ${
-                isProcessing || !previewUrl
+              id="btn-start-batch-scan"
+              type="button"
+              disabled={isBatchProcessing || fileList.length === 0}
+              onClick={handleStartBatchExtraction}
+              className={`w-full flex items-center justify-center space-x-2 py-3.5 px-4 rounded-2xl text-xs font-bold shadow-md transition-all ${
+                isBatchProcessing || fileList.length === 0
                   ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                  : 'bg-emerald-600 hover:bg-emerald-700 text-white hover:shadow-lg active:scale-[0.99]'
+                  : 'bg-emerald-600 hover:bg-emerald-700 text-white hover:shadow-lg'
               }`}
             >
-              {isProcessing ? (
+              {isBatchProcessing ? (
                 <>
-                  <RefreshCw className="w-5 h-5 animate-spin" />
-                  <span>Gemini AI đang đọc chữ & đối chiếu...</span>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Đang xử lý {fileList.length} ảnh...</span>
                 </>
               ) : (
                 <>
-                  <ScanLine className="w-5 h-5" />
-                  <span>Bắt đầu nhận diện & đối chiếu iPOS</span>
+                  <Sparkles className="w-4 h-4" />
+                  <span>
+                    Bắt đầu nhận diện {fileList.length > 0 ? `(${fileList.length} ảnh)` : ''}
+                  </span>
                 </>
               )}
             </button>
-
-            {/* Model & Security Note */}
-            <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
-              <span className="flex items-center space-x-1">
-                <CheckCircle2 className="w-3 h-3 text-emerald-500" />
-                <span>Xử lý Server-side qua Gemini 3.7 Flash & Fallback</span>
-              </span>
-              <span>Bảo mật API Key</span>
-            </div>
           </div>
         </div>
       </div>
+
+      {/* Lightbox Modal */}
+      {previewModalUrl && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="relative max-w-4xl max-h-[90vh] bg-white rounded-2xl overflow-hidden shadow-2xl p-2">
+            <button
+              type="button"
+              onClick={() => setPreviewModalUrl(null)}
+              className="absolute top-4 right-4 p-2 bg-slate-900/70 hover:bg-slate-900 text-white rounded-full transition-colors z-10"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <img
+              src={previewModalUrl}
+              alt="Hóa đơn xem thử"
+              className="max-w-full max-h-[85vh] object-contain rounded-xl"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

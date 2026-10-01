@@ -3,14 +3,15 @@ import { Navbar } from './components/Navbar';
 import { ScanScreen } from './components/ScanScreen';
 import { ReviewScreen } from './components/ReviewScreen';
 import { AdminScreen } from './components/AdminScreen';
+import { ReconciliationScreen } from './components/ReconciliationScreen';
 import { AliasModal } from './components/AliasModal';
 import { TestModal } from './components/TestModal';
+import { CloudSyncModal } from './components/CloudSyncModal';
 import {
+  InvoiceDocumentSession,
   IposMasterData,
   LearnedItemAlias,
   LearnedUnitAlias,
-  MatchedInvoiceRow,
-  RawInvoiceData,
 } from './types';
 import {
   getLearnedItemAliases,
@@ -18,35 +19,21 @@ import {
   loadMasterData,
   saveInvoiceSession,
 } from './utils/db';
-import { CatalogResolver } from './utils/resolver';
+import { syncService, SyncInfo } from './utils/syncService';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<'enduser' | 'admin'>('enduser');
-  const [currentStep, setCurrentStep] = useState<'scan' | 'review'>('scan');
+  const [currentStep, setCurrentStep] = useState<'scan' | 'review' | 'reconcile'>('scan');
   const [masterData, setMasterData] = useState<IposMasterData | null>(null);
   const [learnedAliases, setLearnedAliases] = useState<LearnedItemAlias[]>([]);
   const [learnedUnitAliases, setLearnedUnitAliases] = useState<LearnedUnitAlias[]>([]);
 
-  // Current Working Invoice State
-  const [rawInvoice, setRawInvoice] = useState<RawInvoiceData | null>(null);
-  const [matchedRows, setMatchedRows] = useState<MatchedInvoiceRow[]>([]);
-  const [invoiceMeta, setInvoiceMeta] = useState<{
-    supplierId: string;
-    supplierName: string;
-    warehouseId: string;
-    warehouseName: string;
-    documentDate: string;
-    invoiceNumber: string;
-    imagePreviewUrl?: string;
-    fileName?: string;
-  }>({
-    supplierId: '',
-    supplierName: '',
-    warehouseId: 'KHO_TONG',
-    warehouseName: 'Kho Tổng Trung Tâm',
-    documentDate: new Date().toISOString().slice(0, 10),
-    invoiceNumber: '',
-  });
+  // Cloud Sync state
+  const [syncInfo, setSyncInfo] = useState<SyncInfo>(syncService.getSyncInfo());
+  const [isCloudSyncModalOpen, setIsCloudSyncModalOpen] = useState(false);
+
+  // Current Working Invoices Sessions State (Multiple Invoices support)
+  const [invoices, setInvoices] = useState<InvoiceDocumentSession[]>([]);
 
   // Modal states
   const [isAliasModalOpen, setIsAliasModalOpen] = useState(false);
@@ -54,23 +41,46 @@ export default function App() {
 
   // Initialize data on mount
   useEffect(() => {
-    async function init() {
-      const data = await loadMasterData();
-      if (data) {
-        setMasterData(data);
-        if (data.warehouses && data.warehouses.length > 0) {
-          setInvoiceMeta((prev) => ({
-            ...prev,
-            warehouseId: data.warehouses[0].warehouseId,
-            warehouseName: data.warehouses[0].warehouseName,
-          }));
-        }
-      }
+    let isMounted = true;
 
+    async function init() {
+      // 1. Instant Local Load (Local-First)
+      const data = await loadMasterData();
+      if (isMounted && data) {
+        setMasterData(data);
+      }
       await refreshAliases();
+
+      // 2. Initialize Cloud Sync (Firebase Firestore Shared Store)
+      try {
+        await syncService.init();
+      } catch (err) {
+        console.warn('Sync init warning:', err);
+      }
     }
 
     init();
+
+    // 3. Listen to Sync Status changes
+    const unsubSync = syncService.subscribeSync((info) => {
+      if (isMounted) setSyncInfo(info);
+    });
+
+    // 4. Listen to real-time changes from other devices on the shared store
+    const unsubMaster = syncService.onRemoteMasterData((remote) => {
+      if (isMounted) setMasterData(remote);
+    });
+
+    const unsubAliases = syncService.onRemoteAliases(() => {
+      if (isMounted) refreshAliases();
+    });
+
+    return () => {
+      isMounted = false;
+      unsubSync();
+      unsubMaster();
+      unsubAliases();
+    };
   }, []);
 
   const refreshAliases = async () => {
@@ -82,61 +92,32 @@ export default function App() {
 
   const handleMasterDataUpdated = (data: IposMasterData) => {
     setMasterData(data);
-    if (data.warehouses && data.warehouses.length > 0 && !invoiceMeta.warehouseId) {
-      setInvoiceMeta((prev) => ({
-        ...prev,
-        warehouseId: data.warehouses[0].warehouseId,
-        warehouseName: data.warehouses[0].warehouseName,
-      }));
-    }
   };
 
-  const handleInvoiceExtracted = (
-    extracted: RawInvoiceData,
-    meta: {
-      supplierId: string;
-      supplierName: string;
-      warehouseId: string;
-      warehouseName: string;
-      documentDate: string;
-      invoiceNumber: string;
-      imagePreviewUrl?: string;
-      fileName?: string;
+  const handleInvoicesExtracted = (extractedInvoices: InvoiceDocumentSession[]) => {
+    setInvoices(extractedInvoices);
+
+    // Save all invoice sessions into history asynchronously
+    for (const inv of extractedInvoices) {
+      saveInvoiceSession({
+        id: inv.id,
+        supplierName: inv.supplierName,
+        supplierId: inv.supplierId,
+        warehouseId: inv.warehouseId,
+        invoiceNumber: inv.invoiceNumber,
+        documentDate: inv.documentDate,
+        rows: inv.matchedRows,
+        rawInvoice: inv.rawInvoice,
+        imagePreviewUrl: inv.images?.[0]?.previewUrl,
+        fileName: inv.images?.map((i) => i.fileName).join(', '),
+      });
     }
-  ) => {
-    setRawInvoice(extracted);
-    setInvoiceMeta(meta);
-
-    // Resolve catalog and fuzzy matching
-    const resolver = new CatalogResolver(
-      masterData || { items: [], suppliers: [], warehouses: [], unitConversions: [] },
-      learnedAliases,
-      learnedUnitAliases
-    );
-
-    const processed = resolver.processInvoiceRows(extracted.rows, meta.supplierId);
-    setMatchedRows(processed);
-
-    // Save session to history
-    saveInvoiceSession({
-      id: `inv_${Date.now()}`,
-      supplierName: meta.supplierName,
-      supplierId: meta.supplierId,
-      warehouseId: meta.warehouseId,
-      invoiceNumber: meta.invoiceNumber,
-      documentDate: meta.documentDate,
-      rows: processed,
-      rawInvoice: extracted,
-      imagePreviewUrl: meta.imagePreviewUrl,
-      fileName: meta.fileName,
-    });
 
     setCurrentStep('review');
   };
 
   const handleResetAll = () => {
-    setRawInvoice(null);
-    setMatchedRows([]);
+    setInvoices([]);
     setCurrentStep('scan');
   };
 
@@ -149,6 +130,8 @@ export default function App() {
         currentStep={currentStep}
         setCurrentStep={setCurrentStep}
         masterData={masterData}
+        syncInfo={syncInfo}
+        onOpenCloudSync={() => setIsCloudSyncModalOpen(true)}
         onOpenAliasManager={() => setIsAliasModalOpen(true)}
         onOpenTestRunner={() => setIsTestModalOpen(true)}
         onResetAll={handleResetAll}
@@ -170,23 +153,30 @@ export default function App() {
             {currentStep === 'scan' && (
               <ScanScreen
                 masterData={masterData}
-                onInvoiceExtracted={handleInvoiceExtracted}
+                learnedAliases={learnedAliases}
+                learnedUnitAliases={learnedUnitAliases}
+                onInvoicesExtracted={handleInvoicesExtracted}
                 onGotoAdmin={() => setCurrentView('admin')}
               />
             )}
 
             {currentStep === 'review' && (
               <ReviewScreen
-                rows={matchedRows}
-                setRows={setMatchedRows}
+                invoices={invoices}
+                setInvoices={setInvoices}
                 masterData={masterData}
-                rawInvoice={rawInvoice}
-                meta={invoiceMeta}
                 learnedAliases={learnedAliases}
                 learnedUnitAliases={learnedUnitAliases}
                 onAliasesUpdated={refreshAliases}
                 onBackToScan={() => setCurrentStep('scan')}
                 onOpenAliasManager={() => setIsAliasModalOpen(true)}
+              />
+            )}
+
+            {currentStep === 'reconcile' && (
+              <ReconciliationScreen
+                masterData={masterData}
+                learnedAliases={learnedAliases}
               />
             )}
           </>
@@ -197,19 +187,32 @@ export default function App() {
       <footer className="bg-white border-t border-slate-200 py-4 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div>
-            <strong>iPOS Invoice AI</strong> — Xử lý hóa đơn & phiếu xuất kho nhà hàng sang Excel iPOS Inventory
+            <strong>iPOS Invoice AI</strong> — Xử lý nhận diện đa hóa đơn & phiếu xuất kho sang Excel iPOS Inventory
           </div>
           <div className="flex items-center space-x-3 text-[11px] text-slate-400">
-            <span>Admin CSDL & End User Nhập mua hàng</span>
+            <span>Nhận diện nhiều ảnh cùng lúc</span>
             <span>•</span>
-            <span>IndexedDB Storage</span>
+            <span>Tự động gom nhóm & xuất file riêng</span>
             <span>•</span>
-            <span>Fuzzy Match + AI Aliases</span>
+            <span>Hỗ trợ tải file nén ZIP</span>
           </div>
         </div>
       </footer>
 
       {/* Modals */}
+      <CloudSyncModal
+        isOpen={isCloudSyncModalOpen}
+        onClose={() => setIsCloudSyncModalOpen(false)}
+        syncInfo={syncInfo}
+        masterData={masterData}
+        aliasesCount={learnedAliases.length}
+        onRefreshLocal={async () => {
+          const fresh = await loadMasterData();
+          if (fresh) setMasterData(fresh);
+          await refreshAliases();
+        }}
+      />
+
       <AliasModal
         isOpen={isAliasModalOpen}
         onClose={() => setIsAliasModalOpen(false)}
@@ -226,4 +229,3 @@ export default function App() {
     </div>
   );
 }
-

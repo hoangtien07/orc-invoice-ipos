@@ -1,0 +1,90 @@
+{
+  "entities": {
+    "StoreMasterData": {
+      "collection": "stores/default_store/master_data",
+      "fields": {
+        "updatedAt": { "type": "number", "required": true },
+        "templateFileName": { "type": "string", "required": false },
+        "categories": { "type": "array", "required": false },
+        "units": { "type": "array", "required": false },
+        "unitConversions": { "type": "array", "required": false },
+        "recipes": { "type": "array", "required": false },
+        "warehouses": { "type": "array", "required": false },
+        "customers": { "type": "array", "required": false },
+        "suppliers": { "type": "array", "required": false },
+        "supplierGroups": { "type": "array", "required": false },
+        "priceLists": { "type": "array", "required": false },
+        "reasons": { "type": "array", "required": false },
+        "stockNorms": { "type": "array", "required": false },
+        "totalItems": { "type": "number", "required": false },
+        "itemChunksCount": { "type": "number", "required": false }
+      }
+    },
+    "MasterDataChunk": {
+      "collection": "stores/default_store/master_data_chunks",
+      "fields": {
+        "chunkIndex": { "type": "number", "required": true },
+        "updatedAt": { "type": "number", "required": true },
+        "items": { "type": "array", "required": true }
+      }
+    },
+    "LearnedItemAlias": {
+      "collection": "stores/default_store/item_aliases",
+      "fields": {
+        "id": { "type": "string", "required": true },
+        "supplier_id": { "type": "string", "required": true },
+        "supplier_name": { "type": "string", "required": false },
+        "normalized_raw_item_name": { "type": "string", "required": true },
+        "raw_item_sample": { "type": "string", "required": true },
+        "selected_item_id": { "type": "string", "required": true },
+        "selected_item_name": { "type": "string", "required": true },
+        "selected_unit": { "type": "string", "required": false },
+        "updatedAt": { "type": "number", "required": true },
+        "timesUsed": { "type": "number", "required": false }
+      }
+    },
+    "LearnedUnitAlias": {
+      "collection": "stores/default_store/unit_aliases",
+      "fields": {
+        "normalized_raw_unit": { "type": "string", "required": true },
+        "target_unit_name": { "type": "string", "required": true },
+        "updatedAt": { "type": "number", "required": true }
+      }
+    },
+    "InvoiceHistory": {
+      "collection": "stores/default_store/invoices",
+      "fields": {
+        "id": { "type": "string", "required": true },
+        "supplierName": { "type": "string", "required": false },
+        "supplierId": { "type": "string", "required": false },
+        "warehouseId": { "type": "string", "required": false },
+        "invoiceNumber": { "type": "string", "required": false },
+        "documentDate": { "type": "string", "required": false },
+        "rows": { "type": "array", "required": false },
+        "rawInvoice": { "type": "object", "required": false },
+        "fileName": { "type": "string", "required": false },
+        "createdAt": { "type": "number", "required": true }
+      }
+    },
+    "ReconciliationSession": {
+      "collection": "stores/default_store/reconciliations",
+      "fields": {
+        "id": { "type": "string", "required": true },
+        "title": { "type": "string", "required": true },
+        "supplierName": { "type": "string", "required": false },
+        "createdAt": { "type": "number", "required": true },
+        "updatedAt": { "type": "number", "required": true },
+        "status": { "type": "string", "required": true },
+        "summary": { "type": "object", "required": true },
+        "pairs": { "type": "array", "required": true }
+      }
+    }
+  },
+  "auth": {
+    "providers": ["anonymous"],
+    "roles": ["shared_store_user"]
+  },
+  "firestore": {
+    "rules": "rules_version = '2';\nservice cloud.firestore {\n  match /databases/{database}/documents {\n    match /{document=**} {\n      allow read, write: if true;\n    }\n  }\n}"
+  }
+}

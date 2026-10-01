@@ -146,6 +146,7 @@ export interface IposMasterData {
   templateWorkbookBase64?: string; // FILE_NHAP_MAU_NHAP_MUA_HANG.xlsx
   templateFileName?: string;
   importedAt?: number;
+  updatedAt?: number;
   catalogSourceInfo?: string;
 }
 
@@ -232,6 +233,31 @@ export interface LearnedUnitAlias {
   updatedAt: number;
 }
 
+export interface InvoiceImageItem {
+  id: string;
+  fileName: string;
+  previewUrl: string;
+  fileType?: string;
+  fileSize?: number;
+}
+
+export interface InvoiceDocumentSession {
+  id: string;
+  orderIndex: number;
+  supplierId: string;
+  supplierName: string;
+  warehouseId: string;
+  warehouseName: string;
+  documentDate: string;
+  invoiceNumber: string;
+  note?: string;
+  images: InvoiceImageItem[];
+  rawInvoice: RawInvoiceData;
+  matchedRows: MatchedInvoiceRow[];
+  status?: 'READY' | 'NEEDS_REVIEW' | 'EXPORTED';
+  extractedAt?: number;
+}
+
 export interface ExportValidationResult {
   canExport: boolean;
   redCount: number;
@@ -239,5 +265,118 @@ export interface ExportValidationResult {
   totalRows: number;
   errors: string[];
   warnings: string[];
+}
+
+// ==========================================
+// RECONCILIATION DATA TYPES (ĐỐI SOÁT HÓA ĐƠN)
+// ==========================================
+
+export interface IposReceiptLine {
+  id: string;
+  receiptNumber: string;       // Mã phiếu nhập (PN...)
+  receiptDate: string;         // Ngày nhập kho (YYYY-MM-DD)
+  supplierCode?: string;       // Mã NCC
+  supplierName: string;        // Tên NCC
+  warehouseCode?: string;      // Mã kho nhập
+  warehouseName?: string;      // Tên kho nhập
+  itemId?: string;             // Mã hàng iPOS
+  itemName: string;            // Tên hàng iPOS
+  unitName: string;            // Đơn vị tính
+  quantity: number;            // Số lượng thực nhập
+  unitPrice: number;           // Đơn giá trước thuế
+  amount: number;              // Tiền hàng trước thuế
+  vatRate?: number;            // % Thuế VAT
+  vatAmount?: number;          // Tiền thuế VAT
+  totalAmount: number;         // Tổng tiền thanh toán
+  invoiceNoRef?: string;       // Số HĐ gõ tay trên phiếu
+  note?: string;               // Ghi chú
+  sourceFile?: string;
+}
+
+export interface VendorInvoiceLine {
+  id: string;
+  invoiceNumber: string;       // Số HĐ VAT
+  invoiceSymbol?: string;      // Ký hiệu (1C24T...)
+  invoiceDate: string;         // Ngày lập hóa đơn
+  sellerTaxCode?: string;      // MST người bán
+  sellerName: string;          // Tên NCC / Người bán
+  buyerTaxCode?: string;       // MST người mua / Nhà hàng
+  itemName: string;            // Tên hàng trên HĐ
+  unitName: string;            // ĐVT trên HĐ
+  quantity: number;            // Số lượng
+  unitPrice: number;           // Đơn giá
+  amount: number;              // Tiền hàng
+  vatRate?: number;            // % Thuế
+  vatAmount?: number;          // Tiền thuế
+  totalAmount: number;         // Tổng tiền
+  discountAmount?: number;     // Tiền chiết khấu
+  sourceFile?: string;
+  sourceType: 'XML_E_INVOICE' | 'EXCEL_VENDOR' | 'OCR_RECEIPT';
+}
+
+export type ReconciliationStatus =
+  | 'PERFECT_MATCH'        // Khớp hoàn hảo
+  | 'PRICE_DIFF'           // Lệch đơn giá
+  | 'QUANTITY_DIFF'        // Lệch số lượng
+  | 'PRICE_AND_QTY_DIFF'   // Lệch cả giá và lượng
+  | 'TAX_DIFF'             // Lệch thuế suất VAT
+  | 'UNMATCHED_IPOS'       // Có phiếu nhập iPOS nhưng HĐ chưa xuất
+  | 'UNMATCHED_INVOICE'    // Có HĐ nhưng iPOS chưa nhập kho
+  | 'DUPLICATE_ALERT';     // Cảnh báo trùng lặp
+
+export interface ReconciliationMatchPair {
+  id: string;
+  status: ReconciliationStatus;
+  supplierName: string;
+  matchedItemName: string;
+  
+  // Dữ liệu đối chiếu
+  iposLines: IposReceiptLine[];
+  invoiceLine?: VendorInvoiceLine;
+
+  // Tổng hợp số liệu
+  iposQty: number;
+  invoiceQty: number;
+  iposPrice: number;
+  invoicePrice: number;
+  iposAmount: number;
+  invoiceAmount: number;
+  
+  // Độ chênh lệch (Delta: HĐ - iPOS. Nếu > 0 tức là HĐ tính nhiều hơn thực nhập)
+  qtyDelta: number;
+  priceDelta: number;
+  amountDelta: number;
+
+  unitMatch: boolean;
+  severity: 'OK' | 'WARNING' | 'CRITICAL';
+  suggestedAction: 'APPROVE' | 'DEBIT_VENDOR' | 'UPDATE_IPOS' | 'CHECK_DELIVERY_NOTE';
+  resolutionStatus: 'PENDING' | 'ACCEPTED_TOLERANCE' | 'DEBIT_APPROVED' | 'RESOLVED';
+  resolutionNote?: string;
+}
+
+export interface ReconciliationSummary {
+  totalPairs: number;
+  perfectMatchCount: number;
+  priceDiffCount: number;
+  qtyDiffCount: number;
+  unmatchedIposCount: number;
+  unmatchedInvoiceCount: number;
+  totalIposAmount: number;
+  totalInvoiceAmount: number;
+  totalOverchargedAmount: number; // Tổng số tiền NCC tính dư cần trừ công nợ
+  matchRatePercent: number;
+}
+
+export interface ReconciliationSession {
+  id: string;
+  title: string;
+  supplierName: string;
+  createdAt: number;
+  updatedAt: number;
+  status: 'DRAFT' | 'IN_REVIEW' | 'COMPLETED';
+  summary: ReconciliationSummary;
+  pairs: ReconciliationMatchPair[];
+  iposFileNames?: string[];
+  invoiceFileNames?: string[];
 }
 

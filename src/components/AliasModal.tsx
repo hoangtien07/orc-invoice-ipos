@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { IposMasterData, LearnedItemAlias, LearnedUnitAlias } from '../types';
 import { deleteLearnedAlias, saveLearnedItemAlias, saveLearnedUnitAlias } from '../utils/db';
-import { normalizeText, getAvailableSystemUnits } from '../utils/vietnamese';
+import { normalizeText, normalizeWithoutAccents, getAvailableSystemUnits } from '../utils/vietnamese';
 
 interface AliasModalProps {
   isOpen: boolean;
@@ -39,6 +39,8 @@ export const AliasModal: React.FC<AliasModalProps> = ({
   const [newSupplierId, setNewSupplierId] = useState<string>('*');
   const [newRawName, setNewRawName] = useState<string>('');
   const [newSelectedItemId, setNewSelectedItemId] = useState<string>('');
+  const [itemSearchText, setItemSearchText] = useState<string>('');
+  const [isItemSelectOpen, setIsItemSelectOpen] = useState<boolean>(false);
 
   // Form for adding new unit alias
   const [newRawUnit, setNewRawUnit] = useState<string>('');
@@ -47,6 +49,28 @@ export const AliasModal: React.FC<AliasModalProps> = ({
   const availableUnits = useMemo(() => {
     return getAvailableSystemUnits(masterData);
   }, [masterData]);
+
+  const indexedMasterItems = useMemo(() => {
+    return (masterData?.items || []).map((it) => ({
+      item: it,
+      searchStr: `${it.itemId} ${it.itemName} ${normalizeWithoutAccents(it.itemName)}`.toLowerCase(),
+    }));
+  }, [masterData]);
+
+  const searchedMasterItems = useMemo(() => {
+    if (!isItemSelectOpen) return [];
+    const q = itemSearchText.trim().toLowerCase();
+    const qNo = normalizeWithoutAccents(q).toLowerCase();
+    if (!q) return (masterData?.items || []).slice(0, 15);
+    const res = [];
+    for (const entry of indexedMasterItems) {
+      if (entry.searchStr.includes(q) || entry.searchStr.includes(qNo)) {
+        res.push(entry.item);
+        if (res.length >= 20) break;
+      }
+    }
+    return res;
+  }, [isItemSelectOpen, itemSearchText, indexedMasterItems, masterData]);
 
 
   if (!isOpen) return null;
@@ -70,6 +94,8 @@ export const AliasModal: React.FC<AliasModalProps> = ({
 
     setNewRawName('');
     setNewSelectedItemId('');
+    setItemSearchText('');
+    setIsItemSelectOpen(false);
     onRefresh();
   };
 
@@ -207,21 +233,60 @@ export const AliasModal: React.FC<AliasModalProps> = ({
               />
             </div>
 
-            <div className="sm:col-span-4 space-y-1">
-              <label className="font-semibold text-slate-600">Mã hàng iPOS chuẩn</label>
-              <select
-                value={newSelectedItemId}
-                onChange={(e) => setNewSelectedItemId(e.target.value)}
-                required
-                className="w-full p-2 border border-slate-300 rounded-lg bg-white"
-              >
-                <option value="">-- Chọn mặt hàng iPOS --</option>
-                {masterData?.items?.map((it) => (
-                  <option key={it.itemId} value={it.itemId}>
-                    [{it.itemId}] {it.itemName} ({it.unitName || '—'})
-                  </option>
-                ))}
-              </select>
+            <div className="sm:col-span-4 space-y-1 relative">
+              <label className="font-semibold text-slate-600">Mã hàng iPOS chuẩn (*)</label>
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="Gõ tìm mã hoặc tên hàng..."
+                  value={itemSearchText}
+                  onFocus={() => setIsItemSelectOpen(true)}
+                  onChange={(e) => {
+                    setItemSearchText(e.target.value);
+                    setIsItemSelectOpen(true);
+                  }}
+                  className={`w-full p-2 border rounded-lg bg-white text-xs ${
+                    newSelectedItemId ? 'border-emerald-500 bg-emerald-50/20 font-medium text-slate-900' : 'border-slate-300'
+                  }`}
+                  required
+                />
+                {newSelectedItemId && (
+                  <span className="absolute right-2 top-2 text-[10px] text-emerald-600 font-bold bg-emerald-100 px-1.5 py-0.5 rounded">
+                    ✓ Đã chọn
+                  </span>
+                )}
+              </div>
+
+              {isItemSelectOpen && (
+                <div className="absolute left-0 top-full mt-1 w-full bg-white rounded-xl shadow-xl border border-slate-200 z-50 p-1.5 max-h-56 overflow-y-auto space-y-1">
+                  {searchedMasterItems.length === 0 ? (
+                    <div className="p-3 text-center text-slate-400 text-xs">
+                      Không tìm thấy mặt hàng trong CSDL
+                    </div>
+                  ) : (
+                    searchedMasterItems.map((it) => (
+                      <button
+                        key={it.itemId}
+                        type="button"
+                        onClick={() => {
+                          setNewSelectedItemId(it.itemId);
+                          setItemSearchText(`[${it.itemId}] ${it.itemName}`);
+                          setIsItemSelectOpen(false);
+                        }}
+                        className="w-full text-left p-1.5 hover:bg-emerald-50 rounded-lg transition-colors flex items-center justify-between text-xs"
+                      >
+                        <div className="truncate pr-2">
+                          <span className="font-bold text-slate-900 font-mono">[{it.itemId}]</span>{' '}
+                          <span className="text-slate-700">{it.itemName}</span>
+                        </div>
+                        <span className="text-[10px] text-slate-400 uppercase shrink-0 font-mono">
+                          {it.unitName || it.unitId || '—'}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="sm:col-span-1">
